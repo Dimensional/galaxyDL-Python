@@ -181,13 +181,17 @@ class Depot:
     @classmethod
     def from_json(cls, depot_json: Dict[str, Any]) -> "Depot":
         """Create a Depot from JSON data."""
+        # V1 depots may have size as string, so explicitly convert to int
+        size_value = depot_json.get("size", 0)
+        compressed_size_value = depot_json.get("compressedSize", 0)
+        
         return cls(
             product_id=depot_json.get("productId", ""),
             manifest=depot_json.get("manifest", ""),
             languages=depot_json.get("languages", []),
             os_bitness=depot_json.get("osBitness", []),
-            size=depot_json.get("size", 0),
-            compressed_size=depot_json.get("compressedSize", 0)
+            size=int(size_value) if size_value else 0,
+            compressed_size=int(compressed_size_value) if compressed_size_value else 0
         )
 
     def matches_filters(self, language: Optional[str] = None, 
@@ -276,22 +280,31 @@ class Manifest:
             build_id=manifest_json.get("buildId"),
             generation=1,
             version=1,
-            install_directory=manifest_json.get("installDirectory", ""),
+            install_directory=manifest_json.get("product", {}).get("installDirectory", ""),
             raw_data=manifest_json
         )
         
-        # V1 manifests reference a single main.bin depot
-        # Files are stored as offsets within this blob
-        if "depot" in manifest_json:
-            depot_data = {
-                "productId": product_id,
-                "manifest": manifest_json.get("depot", {}).get("manifest", ""),
-                "languages": ["*"],
-                "size": manifest_json.get("depot", {}).get("size", 0),
-                "compressedSize": manifest_json.get("depot", {}).get("compressedSize", 0)
-            }
-            depot = Depot.from_json(depot_data)
-            manifest.depots.append(depot)
+        # V1 manifests have multiple depots in product.depots
+        # Each depot contains language and game ID info
+        product_data = manifest_json.get("product", {})
+        depots_list = product_data.get("depots", [])
+        
+        for depot_data in depots_list:
+            # Skip redistributable depots (dependencies)
+            if depot_data.get("redist"):
+                continue
+            
+            # Check if this depot is for our product or DLC
+            game_ids = depot_data.get("gameIDs", [])
+            if product_id in game_ids:
+                depot = Depot.from_json({
+                    "productId": product_id,
+                    "manifest": depot_data.get("manifest", ""),
+                    "languages": depot_data.get("languages", ["*"]),
+                    "size": depot_data.get("size", 0),
+                    "compressedSize": depot_data.get("compressedSize", 0)
+                })
+                manifest.depots.append(depot)
         
         return manifest
 
