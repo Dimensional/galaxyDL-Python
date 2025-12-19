@@ -225,16 +225,22 @@ class Manifest:
     
     Attributes:
         base_product_id: Base product ID
-        build_id: Build ID for this manifest
+        build_id: Build ID from builds API (user-facing ID like "3101")
+        repository_id: Repository ID for V1 (legacy_build_id, repository timestamp like "24085618")
         generation: Build generation (1 or 2) - from GOG API builds endpoint
         version: Manifest version (1 or 2) - same as generation, kept for compatibility
         install_directory: Installation directory name
         depots: List of depots in this manifest
         dependencies: List of dependency IDs
         raw_data: Raw JSON data
+    
+    Note:
+        For V1 manifests, repository_id (legacy_build_id) is used in the manifest URL,
+        while build_id is the user-facing identifier shown in builds API.
     """
     base_product_id: str
     build_id: Optional[str] = None
+    repository_id: Optional[str] = None  # V1 only: legacy_build_id / repository timestamp
     generation: int = 2
     version: int = 2  # Same as generation, kept for compatibility
     install_directory: str = ""

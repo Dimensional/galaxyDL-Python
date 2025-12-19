@@ -1,0 +1,5 @@
+# Core dependencies for galaxy-dl
+# For development dependencies, use: pip install -e .[dev]
+# Or install from pyproject.toml: pip install -e .
+
+requests>=2.31.0

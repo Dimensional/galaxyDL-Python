@@ -122,17 +122,27 @@ class GalaxyAPI:
             return {}
 
     def get_product_builds(self, product_id: str, platform: str = constants.PLATFORM_WINDOWS,
-                          generation: str = constants.GENERATION_2) -> Dict[str, Any]:
+                          generation: str = constants.GENERATION_2,
+                          filter_generation: Optional[int] = None) -> Dict[str, Any]:
         """
-        Get available builds for a product.
+        Get available builds for a product from a specific generation endpoint.
+        
+        GOG API Quirky Behavior:
+        - generation=1 or missing: Returns ONLY V1 builds (may miss some in gen=2)
+        - generation=2: Returns BOTH V1 and V2 builds (may miss some in gen=1)
+        - Some builds only appear in one endpoint - use get_all_product_builds() for completeness
         
         Args:
             product_id: GOG product ID
             platform: Platform (windows, osx, linux)
-            generation: Generation version (1 or 2)
+            generation: Generation to query ("1" or "2")
+            filter_generation: Optional - filter results to only this generation (1 or 2)
             
         Returns:
             JSON data containing builds information
+            
+        Note:
+            For complete build discovery, use get_all_product_builds() which queries both endpoints.
         """
         url = constants.BUILDS_URL.format(
             product_id=product_id,
@@ -140,32 +150,177 @@ class GalaxyAPI:
             generation=generation
         )
         
-        self.logger.info(f"Getting builds for product {product_id}")
-        return self._get_response_json(url)
+        self.logger.info(f"Getting builds for product {product_id} (generation={generation})")
+        result = self._get_response_json(url)
+        
+        # Filter by generation if requested
+        if filter_generation is not None and "items" in result:
+            result["items"] = [
+                build for build in result["items"]
+                if build.get("generation") == filter_generation
+            ]
+            result["count"] = len(result["items"])
+        
+        return result
 
-    def get_manifest_v1(self, product_id: str, build_id: str, 
-                       manifest_id: str = "repository",
-                       platform: str = constants.PLATFORM_WINDOWS) -> Dict[str, Any]:
+    def get_all_product_builds(self, product_id: str, 
+                              platform: str = constants.PLATFORM_WINDOWS) -> Dict[str, Any]:
         """
-        Get v1 manifest data.
+        Get ALL available builds (both V1 and V2) for a product.
+        
+        This queries BOTH generation=1 and generation=2 endpoints because:
+        - Some builds only appear in generation=1 query
+        - Some builds only appear in generation=2 query
+        - We need both to ensure complete build discovery
         
         Args:
             product_id: GOG product ID
-            build_id: Build ID
+            platform: Platform (windows, osx, linux)
+            
+        Returns:
+            JSON data containing all builds merged from both queries
+        """
+        all_builds = []
+        
+        # Query generation=1 (may have builds not in gen=2)
+        try:
+            gen1_result = self.get_product_builds(product_id, platform, constants.GENERATION_1)
+            if gen1_result and "items" in gen1_result:
+                all_builds.extend(gen1_result["items"])
+                self.logger.debug(f"Found {len(gen1_result['items'])} builds in generation=1")
+        except Exception as e:
+            self.logger.warning(f"Failed to query generation=1 builds: {e}")
+        
+        # Query generation=2 (may have builds not in gen=1)
+        try:
+            gen2_result = self.get_product_builds(product_id, platform, constants.GENERATION_2)
+            if gen2_result and "items" in gen2_result:
+                all_builds.extend(gen2_result["items"])
+                self.logger.debug(f"Found {len(gen2_result['items'])} builds in generation=2")
+        except Exception as e:
+            self.logger.warning(f"Failed to query generation=2 builds: {e}")
+        
+        if not all_builds:
+            self.logger.warning(f"No builds found for product {product_id}")
+            return {"total_count": 0, "count": 0, "items": []}
+        
+        # Merge and deduplicate builds
+        merged_builds = self._merge_build_lists(all_builds)
+        
+        return {
+            "total_count": len(merged_builds),
+            "count": len(merged_builds),
+            "items": merged_builds,
+            "has_private_branches": False  # We don't know this when merging
+        }
+
+    def _merge_build_lists(self, builds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Merge and deduplicate build lists from multiple queries.
+        
+        Deduplicates by build_id, keeping the first occurrence.
+        Sorts by date_published (newest first).
+        
+        Args:
+            builds: List of build dicts from multiple queries
+            
+        Returns:
+            Deduplicated and sorted list of builds
+        """
+        seen_build_ids = set()
+        unique_builds = []
+        
+        for build in builds:
+            build_id = build.get("build_id")
+            if build_id and build_id not in seen_build_ids:
+                seen_build_ids.add(build_id)
+                unique_builds.append(build)
+            elif build_id:
+                self.logger.debug(f"Skipping duplicate build_id: {build_id}")
+        
+        # Sort by date_published, newest first
+        unique_builds.sort(
+            key=lambda b: b.get("date_published", ""),
+            reverse=True
+        )
+        
+        self.logger.info(f"Merged {len(builds)} builds into {len(unique_builds)} unique builds")
+        return unique_builds
+
+    def get_manifest_v1(self, product_id: str, repository_id: str, 
+                       manifest_id: str = "repository",
+                       platform: str = constants.PLATFORM_WINDOWS) -> Dict[str, Any]:
+        """
+        Get v1 manifest data using repository ID.
+        
+        Args:
+            product_id: GOG product ID
+            repository_id: Repository ID (legacy_build_id from builds API, aka repository timestamp)
             manifest_id: Manifest ID (default: "repository")
             platform: Platform
             
         Returns:
             V1 manifest JSON data
+            
+        Note:
+            For delisted builds, you can get repository_id from gogdb.org (shown as "Repository timestamp")
         """
         url = constants.MANIFEST_V1_URL.format(
             product_id=product_id,
             platform=platform,
-            build_id=build_id,
+            repository_id=repository_id,
             manifest_id=manifest_id
         )
         
-        self.logger.info(f"Getting v1 manifest for {product_id}/{build_id}")
+        self.logger.info(f"Getting v1 manifest for {product_id}/{repository_id}")
+        return self._get_response_json(url)
+
+    def get_manifest_v1_direct(self, product_id: str, repository_id: str,
+                              platform: str = constants.PLATFORM_WINDOWS) -> Dict[str, Any]:
+        """
+        Get v1 manifest directly by repository ID (for delisted builds).
+        
+        This is useful when you have repository ID from external sources like gogdb.org
+        and the build is no longer listed in the builds API.
+        
+        Args:
+            product_id: GOG product ID
+            repository_id: Repository ID (legacy_build_id, repository timestamp)
+            platform: Platform
+            
+        Returns:
+            V1 manifest JSON data
+            
+        Example:
+            >>> # From gogdb.org: Repository timestamp: 24085618
+            >>> manifest = api.get_manifest_v1_direct("1207658924", "24085618", "osx")
+        """
+        url = constants.MANIFEST_V1_REPOSITORY_URL.format(
+            product_id=product_id,
+            platform=platform,
+            repository_id=repository_id
+        )
+        
+        self.logger.info(f"Getting v1 manifest directly: {product_id}/{repository_id}")
+        return self._get_response_json(url)
+
+    def get_manifest_by_url(self, url: str) -> Dict[str, Any]:
+        """
+        Get manifest directly by URL (maximum flexibility for delisted builds).
+        
+        This allows you to paste URLs directly from gogdb.org or other sources.
+        
+        Args:
+            url: Full manifest URL
+            
+        Returns:
+            Manifest JSON data
+            
+        Example:
+            >>> url = "https://cdn.gog.com/content-system/v1/manifests/1207658924/osx/24085618/repository.json"
+            >>> manifest = api.get_manifest_by_url(url)
+        """
+        self.logger.info(f"Getting manifest from URL: {url}")
         return self._get_response_json(url)
 
     def get_manifest_v2(self, manifest_hash: str, is_dependency: bool = False) -> Dict[str, Any]:
@@ -396,17 +551,13 @@ class GalaxyAPI:
             
         Returns:
             Build info dict with 'build' and 'generation' keys, or None if not found
+        
+        Note:
+            Queries generation=2 which returns ALL builds (both V1 and V2).
+            This ensures we find the build regardless of its generation.
         """
-        # First try generation 2 (most common for modern games)
-        builds_json = self.get_product_builds(product_id, platform, constants.GENERATION_2)
-        
-        if builds_json and "items" in builds_json:
-            build_info = self._find_build_in_list(builds_json["items"], build_id)
-            if build_info:
-                return build_info
-        
-        # Try generation 1 as fallback
-        builds_json = self.get_product_builds(product_id, platform, constants.GENERATION_1)
+        # Query generation=2 to get ALL builds (V1 and V2)
+        builds_json = self.get_all_product_builds(product_id, platform)
         
         if builds_json and "items" in builds_json:
             build_info = self._find_build_in_list(builds_json["items"], build_id)
@@ -480,10 +631,139 @@ class GalaxyAPI:
         self.logger.warning(f"Could not detect generation for {product_id}, defaulting to 2")
         return 2
 
+    def get_manifest_from_build(self, product_id: str, build: Dict[str, Any],
+                                platform: str = constants.PLATFORM_WINDOWS) -> Optional[Manifest]:
+        """
+        Get manifest from a build dict (from builds list or cache).
+        
+        This is ideal for frontends where the user has already selected a build
+        from a list, avoiding redundant API queries.
+        
+        Args:
+            product_id: GOG product ID
+            build: Build dict from builds API (must contain 'generation' field)
+            platform: Platform
+            
+        Returns:
+            Manifest object or None if manifest fetch fails
+            
+        Example:
+            >>> # Frontend workflow
+            >>> builds = api.get_all_product_builds("1207658924")
+            >>> selected_build = builds["items"][0]  # User selects from list
+            >>> manifest = api.get_manifest_from_build("1207658924", selected_build)
+        """
+        generation = build.get("generation", 2)
+        build_id = build.get("build_id")
+        
+        self.logger.info(f"Getting manifest from build (generation={generation}, build_id={build_id})")
+        
+        if generation == 1:
+            # V1 manifest - use repository_id (legacy_build_id)
+            repository_id = build.get("legacy_build_id")
+            if not repository_id:
+                self.logger.error("V1 build missing legacy_build_id (repository_id)")
+                return None
+            
+            manifest_json = self.get_manifest_v1_direct(product_id, repository_id, platform)
+            if not manifest_json:
+                return None
+            
+            manifest = Manifest.from_json_v1(manifest_json, product_id)
+            manifest.build_id = build_id
+            manifest.repository_id = repository_id
+            return manifest
+        else:
+            # V2 manifest - use link from build
+            link = build.get("link")
+            if not link:
+                self.logger.error("V2 build missing manifest link")
+                return None
+            
+            manifest_json = self._get_response_json(link)
+            if not manifest_json:
+                return None
+            
+            manifest = Manifest.from_json_v2(manifest_json)
+            manifest.build_id = build_id
+            return manifest
+
+    def get_manifest_direct(self, product_id: str,
+                          generation: int,
+                          repository_id: Optional[str] = None,
+                          manifest_link: Optional[str] = None,
+                          build_id: Optional[str] = None,
+                          platform: str = constants.PLATFORM_WINDOWS) -> Optional[Manifest]:
+        """
+        Get manifest directly without querying builds API.
+        
+        Use this when you have specific build details from external sources (gogdb.org)
+        or cached data and want to bypass the builds API query.
+        
+        Args:
+            product_id: GOG product ID
+            generation: Generation (1 or 2)
+            repository_id: Required for V1 - legacy_build_id / repository timestamp
+            manifest_link: Required for V2 - full manifest URL from build
+            build_id: Optional - for tracking purposes
+            platform: Platform (used for V1 only)
+            
+        Returns:
+            Manifest object or None if fetch fails
+            
+        Example (V1 from gogdb.org):
+            >>> # gogdb.org shows: Repository timestamp: 24085618
+            >>> manifest = api.get_manifest_direct(
+            ...     product_id="1207658924",
+            ...     generation=1,
+            ...     repository_id="24085618",
+            ...     platform="osx"
+            ... )
+            
+        Example (V2 with cached link):
+            >>> manifest = api.get_manifest_direct(
+            ...     product_id="1207658924",
+            ...     generation=2,
+            ...     manifest_link="https://cdn.gog.com/content-system/v2/meta/...",
+            ...     build_id="58654815952891330"
+            ... )
+        """
+        if generation == 1:
+            if not repository_id:
+                raise ValueError("repository_id required for V1 manifests")
+            
+            self.logger.info(f"Getting V1 manifest directly: {product_id}/{repository_id}")
+            manifest_json = self.get_manifest_v1_direct(product_id, repository_id, platform)
+            
+            if not manifest_json:
+                return None
+            
+            manifest = Manifest.from_json_v1(manifest_json, product_id)
+            manifest.build_id = build_id
+            manifest.repository_id = repository_id
+            return manifest
+        else:
+            if not manifest_link:
+                raise ValueError("manifest_link required for V2 manifests")
+            
+            self.logger.info(f"Getting V2 manifest directly: {manifest_link}")
+            manifest_json = self._get_response_json(manifest_link)
+            
+            if not manifest_json:
+                return None
+            
+            manifest = Manifest.from_json_v2(manifest_json)
+            manifest.build_id = build_id
+            return manifest
+
     def get_manifest(self, product_id: str, build_id: Optional[str] = None,
                     platform: str = constants.PLATFORM_WINDOWS) -> Optional[Manifest]:
         """
         Get manifest for a product build, automatically detecting generation.
+        
+        This method queries the builds API to find the build and detect its generation.
+        For better performance in frontends, consider using get_manifest_from_build()
+        after letting the user select from a builds list.
         
         Args:
             product_id: GOG product ID
@@ -498,36 +778,115 @@ class GalaxyAPI:
         if not build_info:
             return None
         
-        generation = build_info["generation"]
-        build = build_info["build"]
+        # Use get_manifest_from_build for consistency
+        return self.get_manifest_from_build(product_id, build_info["build"], platform)
+
+    def get_owned_games(self) -> List[int]:
+        """
+        Get list of owned game IDs from user's GOG library.
         
-        if generation == 1:
-            # V1: Get manifest using product_id and build_id
-            manifest_json = self.get_manifest_v1(
-                product_id,
-                build.get("build_id", ""),
-                platform=platform
-            )
-            if manifest_json:
-                return Manifest.from_json_v1(manifest_json, product_id)
-        
-        elif generation == 2:
-            # V2: Extract manifest hash from link and fetch
-            link = build.get("link", "")
-            if not link:
-                self.logger.error("No link found in build data")
-                return None
+        Returns:
+            List of product IDs that the authenticated user owns
             
-            # Extract manifest hash from link (last path component)
-            manifest_hash = link.split("/")[-1]
-            manifest_json = self.get_manifest_v2(manifest_hash)
+        Example:
+            >>> api = GalaxyAPI(auth_manager)
+            >>> game_ids = api.get_owned_games()
+            >>> print(f"You own {len(game_ids)} games")
+            >>> # [1207658691, 1207658713, 1207658805, ...]
+        """
+        self.logger.info("Getting owned games list")
+        
+        try:
+            response = self._get_response_json(constants.USER_GAMES_URL)
             
-            if manifest_json:
-                return Manifest.from_json_v2(manifest_json)
+            if "owned" in response:
+                game_ids = response["owned"]
+                self.logger.info(f"Found {len(game_ids)} owned games")
+                return game_ids
+            else:
+                self.logger.warning("No 'owned' field in user games response")
+                return []
+                
+        except Exception as e:
+            self.logger.error(f"Failed to get owned games: {e}")
+            return []
+
+    def get_game_details(self, game_id: int) -> Dict[str, Any]:
+        """
+        Get detailed information about a game from user's library.
         
-        else:
-            self.logger.error(f"Unsupported generation: {generation}")
-            return None
+        This returns information about downloads, extras, DLCs, etc.
+        Useful for frontends to display game information and download options.
         
-        return None
+        Args:
+            game_id: GOG product ID from owned games list
+            
+        Returns:
+            Dictionary containing:
+            - title: Game title
+            - backgroundImage: Background image URL
+            - downloads: Available downloads per language/platform
+            - extras: Bonus content (manuals, wallpapers, etc.)
+            - dlcs: DLC information
+            - tags: Game tags
+            - releaseTimestamp: Release date
+            - forumLink: Forum URL
+            - changelog: Changelog if available
+            
+        Example:
+            >>> details = api.get_game_details(1207658924)
+            >>> print(details["title"])
+            >>> # "Unreal Tournament 2004 Editor's Choice Edition"
+            >>> 
+            >>> for lang, platforms in details["downloads"]:
+            ...     print(f"Language: {lang}")
+            ...     for platform, files in platforms.items():
+            ...         print(f"  Platform: {platform} ({len(files)} files)")
+        """
+        url = constants.GAME_DETAILS_URL.format(game_id=game_id)
+        self.logger.info(f"Getting game details for {game_id}")
+        
+        try:
+            return self._get_response_json(url)
+        except Exception as e:
+            self.logger.error(f"Failed to get game details: {e}")
+            return {}
+
+    def get_owned_games_with_details(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get owned games list with full details for each game.
+        
+        This is a convenience method for frontends that want to display
+        a complete game library with all information.
+        
+        Args:
+            limit: Optional limit on number of games to fetch details for
+                  (useful for testing or pagination)
+            
+        Returns:
+            List of game detail dictionaries
+            
+        Example:
+            >>> # Get first 10 games with details
+            >>> games = api.get_owned_games_with_details(limit=10)
+            >>> for game in games:
+            ...     print(f"{game['title']} - {len(game['downloads'])} downloads")
+        """
+        game_ids = self.get_owned_games()
+        
+        if limit:
+            game_ids = game_ids[:limit]
+        
+        games_with_details = []
+        for game_id in game_ids:
+            details = self.get_game_details(game_id)
+            if details:  # Only add if we got valid details
+                details["id"] = game_id  # Add ID for reference
+                games_with_details.append(details)
+        
+        self.logger.info(f"Retrieved details for {len(games_with_details)} games")
+        return games_with_details
+
+        self.logger.info(f"Retrieved details for {len(games_with_details)} games")
+        return games_with_details
 
