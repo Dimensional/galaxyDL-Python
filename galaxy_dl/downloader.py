@@ -230,7 +230,7 @@ class GalaxyDownloader:
         """
         Download V2 item using multi-threaded chunk downloads.
         
-        Original V2 implementation from downloader.py.
+        Now uses parallel chunk downloads like V1 for better performance.
         """
         utils.ensure_directory(output_dir)
         normalized_path = utils.normalize_path(item.path)
@@ -247,29 +247,53 @@ class GalaxyDownloader:
             if not cdn_urls:
                 raise DownloadError(f"Failed to get secure links for {item.product_id}")
         
-        # Download chunks
+        # Download chunks in parallel
         total_bytes = sum(chunk.size_compressed for chunk in item.chunks)
         downloaded_bytes = 0
+        chunk_results: List[Optional[bytes]] = [None] * len(item.chunks)  # Preserve order
         
+        # Create chunk download tasks
+        tasks = []
+        for idx, chunk in enumerate(item.chunks):
+            task = ChunkDownloadTask(
+                task_id=f"v2_chunk_{idx}",
+                url="",  # Will be set in download method
+                output_path=output_path,
+                chunk=chunk,
+                chunk_index=idx,
+                verify_hash=verify_hash
+            )
+            tasks.append(task)
+        
+        # Download chunks in parallel
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_task = {
+                executor.submit(self._download_and_decompress_chunk, task, cdn_urls): task
+                for task in tasks
+            }
+            
+            for future in as_completed(future_to_task):
+                task = future_to_task[future]
+                try:
+                    decompressed_data = future.result()
+                    chunk_results[task.chunk_index] = decompressed_data
+                    
+                    downloaded_bytes += task.chunk.size_compressed
+                    if progress_callback:
+                        progress_callback(downloaded_bytes, total_bytes)
+                    
+                    self.logger.debug(f"Completed chunk {task.chunk_index + 1}/{len(item.chunks)}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to download chunk {task.chunk_index}: {e}")
+                    raise DownloadError(f"V2 item download failed: {e}")
+        
+        # Write all chunks to file in order
         with open(output_path, 'wb') as output_file:
-            for idx, chunk in enumerate(item.chunks):
-                self.logger.debug(f"Downloading chunk {idx + 1}/{len(item.chunks)}")
-                
-                chunk_data = self._download_v2_chunk(chunk, cdn_urls, verify_hash)
-                
-                # Decompress if needed
-                if chunk.size_compressed != chunk.size_uncompressed:
-                    try:
-                        chunk_data = zlib.decompress(chunk_data, constants.ZLIB_WINDOW_SIZE)
-                    except zlib.error as e:
-                        raise DownloadError(f"Failed to decompress chunk {idx}: {e}")
-                
-                # Write to file
+            for chunk_data in chunk_results:
+                if chunk_data is None:
+                    raise DownloadError("Missing chunk data - download incomplete")
                 output_file.write(chunk_data)
-                
-                downloaded_bytes += chunk.size_compressed
-                if progress_callback:
-                    progress_callback(downloaded_bytes, total_bytes)
         
         # Verify final file hash if available
         if item.md5 and verify_hash:
@@ -277,10 +301,25 @@ class GalaxyDownloader:
             actual_hash = utils.calculate_hash(output_path, "md5")
             if actual_hash.lower() != item.md5.lower():
                 self.logger.error(f"Hash mismatch! Expected: {item.md5}, Got: {actual_hash}")
+                os.remove(output_path)
                 raise DownloadError("File hash verification failed")
         
         self.logger.info(f"Successfully downloaded V2 item to {output_path}")
         return output_path
+    
+    def _download_and_decompress_chunk(self, task: ChunkDownloadTask, cdn_urls: List[str]) -> bytes:
+        """Download and decompress a single V2 chunk."""
+        # Download chunk
+        chunk_data = self._download_v2_chunk(task.chunk, cdn_urls, task.verify_hash)
+        
+        # Decompress if needed
+        if task.chunk.size_compressed != task.chunk.size_uncompressed:
+            try:
+                chunk_data = zlib.decompress(chunk_data, constants.ZLIB_WINDOW_SIZE)
+            except zlib.error as e:
+                raise DownloadError(f"Failed to decompress chunk {task.chunk_index}: {e}")
+        
+        return chunk_data
 
     def _download_v2_chunk(self, chunk: DepotItemChunk, cdn_urls: List[str],
                           verify_hash: bool = True) -> bytes:

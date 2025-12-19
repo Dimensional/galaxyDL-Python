@@ -6,17 +6,20 @@ This library focuses exclusively on downloading from the Galaxy content delivery
 
 ## Features
 
-- ✅ Download Galaxy v1 and v2 depot files
-  - **V1**: Single-threaded main.bin blob downloads (legacy format)
+- ✅ **Multi-threaded Downloads** - Both V1 and V2 use parallel chunk downloads
+  - **V1**: Multi-threaded range requests for main.bin blob (legacy format)
   - **V2**: Multi-threaded 10MB chunk downloads (current format)
-- ✅ Handle compressed chunks with zlib decompression  
-- ✅ Support for dependencies and patches
-- ✅ Small files container support
-- ✅ Secure link generation and CDN URL management
-- ✅ MD5/SHA256 verification for downloaded chunks
-- ✅ Multi-threaded parallel downloads (V2)
-- ✅ Automatic token refresh
-- ✅ Resume capability for interrupted downloads
+- ✅ **User Library Access** - List owned games and browse available builds
+- ✅ **Flexible Build Selection** - Direct access, build browsing, or delisted build support
+- ✅ **Generation Auto-Detection** - Automatically detect and handle V1 or V2 manifests
+- ✅ **Handle compressed chunks** with zlib decompression  
+- ✅ **Support for dependencies and patches**
+- ✅ **Small files container support**
+- ✅ **Secure link generation and CDN URL management**
+- ✅ **MD5/SHA256 verification** for downloaded chunks
+- ✅ **Automatic token refresh**
+- ✅ **Progress callback support** for frontends
+- ✅ **Error recovery** with retry logic
 
 ## Installation
 
@@ -47,132 +50,193 @@ auth = AuthManager()
 auth.login_with_code(code="YOUR_OAUTH_CODE_HERE")
 ```
 
-### 2. Download Galaxy Files
-
-**For V2 Manifests (10MB chunks - current format):**
+### 2. Browse Your Library
 
 ```python
-from galaxy_dl import GalaxyAPI, GalaxyDownloader, AuthManager
+from galaxy_dl import GalaxyAPI, AuthManager
 
-# Initialize
 auth = AuthManager()
 api = GalaxyAPI(auth)
-downloader = GalaxyDownloader(api, max_workers=8)  # Multi-threaded
 
-# Get depot items
-depot_items = api.get_depot_items(manifest_hash="abc123...")
+# Get your owned games
+game_ids = api.get_owned_games()
+print(f"You own {len(game_ids)} games")
 
-# Download chunks in parallel
-for item in depot_items:
-    output_path = downloader.download_item(item, output_dir="./downloads")
-    print(f"Downloaded: {output_path}")
+# Get details for a specific game
+details = api.get_game_details(game_ids[0])
+print(f"Title: {details['title']}")
 ```
 
-**For V1 Manifests (main.bin blob - legacy format):**
+### 3. Get Game Builds
 
 ```python
-from galaxy_dl import GalaxyAPI, GalaxyV1Downloader, AuthManager
+# List all available builds for a game
+builds = api.get_all_product_builds("1207658924", "windows")
 
-# Initialize
-auth = AuthManager()
-api = GalaxyAPI(auth)
-v1_downloader = GalaxyV1Downloader(api)  # Single-threaded
+# Show builds to user
+for idx, build in enumerate(builds["items"]):
+    print(f"{idx}: Build {build['build_id']} - Gen {build.get('generation', 'unknown')}")
 
-# Download main.bin blob
-blob_path = v1_downloader.download_v1_blob(
-    manifest_hash="abc123...",
-    product_id="1234567890",
-    output_dir="./downloads"
+# User selects a build
+selected_build = builds["items"][0]
+```
+
+### 4. Get Manifest
+
+**Option A: From selected build (recommended for frontends):**
+```python
+manifest = api.get_manifest_from_build("1207658924", selected_build, "windows")
+```
+
+**Option B: Auto-detect with build_id:**
+```python
+manifest = api.get_manifest("1207658924", build_id="3101", platform="windows")
+```
+
+**Option C: Direct access (for delisted builds from gogdb.org):**
+```python
+# V1 with repository_id from gogdb.org
+manifest = api.get_manifest_direct(
+    product_id="1207658924",
+    generation=1,
+    repository_id="24085618",  # From gogdb.org "Repository timestamp"
+    platform="windows"
 )
 
-# Optional: Extract individual files
-manifest_data = api.get_manifest_v1(product_id, "", manifest_hash)
-if "files" in manifest_data:
-    v1_downloader.extract_all_files_from_blob(
-        blob_path,
-        manifest_data["files"],
-        "./game_files"
-    )V2 chunk-based downloads (multi-threaded)
-- **`galaxy_dl.downloader_v1`** - Download manager for V1 main.bin blobs (single-threaded)
-- **`galaxy_dl.utils`** - Utility functions for hashing, compression, path handling
-- **`galaxy_dl.constants`** - API endpoints and configuration constants
+# V2 with manifest link
+manifest = api.get_manifest_direct(
+    product_id="1207658924",
+    generation=2,
+    manifest_link="https://cdn.gog.com/content-system/v2/meta/..."
+)
+```
 
-### V1 vs V2 Manifests
-
-**Important**: Galaxy uses two different manifest formats:
-
-- **V1 (Legacy)**: Single `main.bin` blob containing all files at specific offsets
-  - Use `GalaxyV1Downloader` for single-threaded blob downloads
-  - Extract files after downloading the blob
-  
-- **V2 (Current)**: Files split into ~10MB chunks, like Steam CDN
-  - Use `GalaxyDownloader` for multi-threaded chunk downloads
-  - Chunks automatically assembled into files
-
-See [V1_VS_V2.md](V1_VS_V2.md) for detailed comparison and usage guide.
-### 3. Download with Progress Tracking
+### 5. Download Files
 
 ```python
+from galaxy_dl import GalaxyDownloader
+
+downloader = GalaxyDownloader(api, max_workers=8)
+
+# Get files from manifest
+depot = manifest.depots[0]
+# ... get items from depot ...
+
+# Download with progress tracking
 def progress_callback(downloaded, total):
     percent = (downloaded / total) * 100
     print(f"Progress: {percent:.1f}%")
 
-downloader.download_item(
-    item, 
-    output_dir="./downloads",
-    progress_callback=progress_callback
-)
+for item in items:
+    path = downloader.download_item(
+        item,
+        output_dir="./downloads",
+        progress_callback=progress_callback
+    )
+    print(f"Downloaded: {path}")
 ```
 
 ## Architecture
 
 The library is organized into focused modules:
 
-- **`galaxy_dl.api`** - Galaxy API client for accessing content-system endpoints
+- **`galaxy_dl.api`** - Galaxy API client (user library, builds, manifests)
 - **`galaxy_dl.auth`** - Authentication manager for OAuth token management  
 - **`galaxy_dl.models`** - Data models for depots, chunks, manifests
-- **`galaxy_dl.downloader`** - Download manager for chunk-based downloads
+- **`galaxy_dl.downloader`** - Unified download manager (V1 and V2, multi-threaded)
 - **`galaxy_dl.utils`** - Utility functions for hashing, compression, path handling
 - **`galaxy_dl.constants`** - API endpoints and configuration constants
+- **`galaxy_dl.cli`** - Command-line interface (basic)
+
+### V1 vs V2 Manifests
+
+**Important**: Galaxy uses two different manifest formats (auto-detected):
+
+- **V1 (Legacy)**: Single `main.bin` blob containing all files at specific offsets
+  - Uses multi-threaded HTTP range requests for parallel download
+  - Automatically detected when `generation == 1`
+  
+- **V2 (Current)**: Files split into ~10MB chunks, like Steam CDN
+  - Uses multi-threaded chunk downloads
+  - Automatically detected when `generation == 2`
+
+The `GalaxyDownloader` handles both transparently. See [GENERATION_DETECTION.md](GENERATION_DETECTION.md) and [DELISTED_BUILDS.md](DELISTED_BUILDS.md) for details.
+
+## API Reference
+
+### Core Classes
+
+**`GalaxyAPI`** - Main API client
+- `get_owned_games()` - List user's game library
+- `get_game_details(game_id)` - Get game details with download options
+- `get_all_product_builds(product_id, platform)` - Get all builds (V1+V2)
+- `get_manifest_from_build(product_id, build, platform)` - Get manifest from build dict
+- `get_manifest_direct(product_id, generation, ...)` - Direct access for delisted builds
+- `get_manifest(product_id, build_id, platform)` - Auto-detect and fetch manifest
+
+**`GalaxyDownloader`** - Unified downloader
+- `download_item(item, output_dir, ...)` - Download single file (auto-detects V1/V2)
+- `download_items_parallel(items, output_dir, ...)` - Download multiple files in parallel
+
+**`AuthManager`** - OAuth authentication
+- `login_with_code(code)` - Login with OAuth code
+- `is_authenticated()` - Check authentication status
+- `get_token()` - Get current access token
+
+See [API_REFERENCE.md](API_REFERENCE.md) for complete documentation.
 
 ## API Endpoints
 
-This library uses the following GOG Galaxy API endpoints (updated from lgogdownloader):
+This library uses the following GOG Galaxy API endpoints:
 
 | Endpoint | Purpose |
 |----------|---------|
+| `https://embed.gog.com/user/data/games` | Get owned games list |
+| `https://embed.gog.com/account/gameDetails/{id}.json` | Get game details |
 | `https://content-system.gog.com/products/{id}/os/{platform}/builds` | Get available builds |
 | `https://cdn.gog.com/content-system/v2/meta/{path}` | Get v2 manifests |
-| `https://cdn.gog.com/content-system/v1/manifests/{product_id}/{platform}/{build_id}/{manifest_id}.json` | Get v1 manifests |
+| `https://cdn.gog.com/content-system/v1/manifests/...` | Get v1 manifests |
 | `https://content-system.gog.com/products/{id}/secure_link` | Get secure download links |
-| `https://content-system.gog.com/dependencies/repository?generation=2` | Get dependencies |
-| `https://content-system.gog.com/open_link` | Get dependency download links |
+| `https://content-system.gog.com/dependencies/repository` | Get dependencies |
 
 ## Key Improvements from Reference Implementations
 
 ### From lgogdownloader (C++)
 - ✅ Updated CDN URLs and API endpoints
+- ✅ V1 multi-threaded range requests (original was single-threaded)
 - ✅ Better handling of manifest v2 with zlib compression
 - ✅ Support for small files containers
 - ✅ Enhanced secure link handling with CDN priority
 - ✅ Improved path handling from download URLs
+- ✅ Builds API quirk handling (generation parameter behavior)
 
 ### From heroic-gogdl (Python)
 - ✅ Clean Python API design
 - ✅ Object-oriented data models
 - ✅ Session-based HTTP requests
 - ✅ Modular architecture
+- ✅ V2 parallel chunk downloads
 
 ### Additional Enhancements  
-- ✅ Type hints for better IDE support
-- ✅ Comprehensive logging
-- ✅ Progress callback support
-- ✅ Parallel downloads with ThreadPoolExecutor
-- ✅ Automatic hash verification
+- ✅ **Unified downloader** - Single class handles both V1 and V2
+- ✅ **User library access** - Browse owned games and builds
+- ✅ **Flexible build selection** - Direct, auto-detect, or delisted build access
+- ✅ **Type hints** for better IDE support
+- ✅ **Comprehensive logging** with configurable levels
+- ✅ **Progress callback support** for frontend integration
+- ✅ **Multi-threaded V1 and V2** downloads for maximum speed
+- ✅ **Automatic hash verification** with retry logic
+- ✅ **Build merging** - Queries both gen=1 and gen=2 to get all available builds
 
 ## Example Usage
 
-See [`example.py`](example.py) for a complete working example.
+See the [`examples/`](examples/) directory for practical examples:
+- **`list_library.py`** - List your owned games with details
+- **`download_game.py`** - Complete download workflow
+- **`build_selection.py`** - Interactive build selector
+- **`delisted_builds.py`** - Access delisted builds using gogdb.org data
+
+Or see [`example.py`](example.py) for a basic example.
 
 ## Development
 
