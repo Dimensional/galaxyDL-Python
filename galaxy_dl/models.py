@@ -226,7 +226,8 @@ class Manifest:
     Attributes:
         base_product_id: Base product ID
         build_id: Build ID for this manifest
-        version: Manifest version (1 or 2)
+        generation: Build generation (1 or 2) - from GOG API builds endpoint
+        version: Manifest version (1 or 2) - same as generation, kept for compatibility
         install_directory: Installation directory name
         depots: List of depots in this manifest
         dependencies: List of dependency IDs
@@ -234,7 +235,8 @@ class Manifest:
     """
     base_product_id: str
     build_id: Optional[str] = None
-    version: int = 2
+    generation: int = 2
+    version: int = 2  # Same as generation, kept for compatibility
     install_directory: str = ""
     depots: List[Depot] = field(default_factory=list)
     dependencies: List[str] = field(default_factory=list)
@@ -246,6 +248,7 @@ class Manifest:
         manifest = cls(
             base_product_id=manifest_json.get("baseProductId", ""),
             build_id=manifest_json.get("buildId"),
+            generation=2,
             version=2,
             install_directory=manifest_json.get("installDirectory", ""),
             dependencies=manifest_json.get("dependencies", []),
@@ -265,6 +268,7 @@ class Manifest:
         manifest = cls(
             base_product_id=product_id,
             build_id=manifest_json.get("buildId"),
+            generation=1,
             version=1,
             install_directory=manifest_json.get("installDirectory", ""),
             raw_data=manifest_json

@@ -4,6 +4,7 @@ Based on heroic-gogdl api.py and lgogdownloader galaxyapi.cpp
 Provides access to GOG Galaxy content-system API
 """
 
+import json
 import logging
 from typing import List, Optional, Dict, Any
 from urllib.parse import quote
@@ -382,6 +383,151 @@ class GalaxyAPI:
             self.logger.error(f"Failed to get product info: {e}")
             return {}
 
+    def get_build_by_id(self, product_id: str, build_id: Optional[str] = None,
+                       platform: str = constants.PLATFORM_WINDOWS) -> Optional[Dict[str, Any]]:
+        """
+        Get specific build by ID or latest build if ID not provided.
+        Automatically detects generation from builds response.
+        
+        Args:
+            product_id: GOG product ID
+            build_id: Optional build ID. If None, returns latest build.
+            platform: Platform (windows, osx, linux)
+            
+        Returns:
+            Build info dict with 'build' and 'generation' keys, or None if not found
+        """
+        # First try generation 2 (most common for modern games)
+        builds_json = self.get_product_builds(product_id, platform, constants.GENERATION_2)
+        
+        if builds_json and "items" in builds_json:
+            build_info = self._find_build_in_list(builds_json["items"], build_id)
+            if build_info:
+                return build_info
+        
+        # Try generation 1 as fallback
+        builds_json = self.get_product_builds(product_id, platform, constants.GENERATION_1)
+        
+        if builds_json and "items" in builds_json:
+            build_info = self._find_build_in_list(builds_json["items"], build_id)
+            if build_info:
+                return build_info
+        
+        self.logger.warning(f"No builds found for product {product_id}")
+        return None
 
-import json  # Move import to top in real implementation
+    def _find_build_in_list(self, builds: List[Dict[str, Any]], 
+                           build_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Find a specific build in builds list or return latest.
+        
+        Args:
+            builds: List of builds from API
+            build_id: Optional build ID to find. Can be numeric string (index) or actual build_id
+            
+        Returns:
+            Dict with 'build' and 'generation' keys if found, None otherwise
+        """
+        if not builds:
+            return None
+        
+        # If no build_id specified, return first (latest) build
+        if build_id is None:
+            return {
+                "build": builds[0],
+                "generation": builds[0].get("generation", 2)
+            }
+        
+        # Try to find by exact build_id match
+        for build in builds:
+            if build.get("build_id") == build_id:
+                return {
+                    "build": build,
+                    "generation": build.get("generation", 2)
+                }
+        
+        # Try to use build_id as index (legacy lgogdownloader behavior)
+        try:
+            index = int(build_id)
+            if 0 <= index < len(builds):
+                return {
+                    "build": builds[index],
+                    "generation": builds[index].get("generation", 2)
+                }
+        except (ValueError, TypeError):
+            pass
+        
+        return None
+
+    def detect_build_generation(self, product_id: str, build_id: Optional[str] = None,
+                               platform: str = constants.PLATFORM_WINDOWS) -> int:
+        """
+        Detect the generation (1 or 2) of a specific build.
+        
+        Args:
+            product_id: GOG product ID
+            build_id: Optional build ID (defaults to latest)
+            platform: Platform
+            
+        Returns:
+            Generation number (1 or 2), defaults to 2 if detection fails
+        """
+        build_info = self.get_build_by_id(product_id, build_id, platform)
+        
+        if build_info:
+            return build_info["generation"]
+        
+        self.logger.warning(f"Could not detect generation for {product_id}, defaulting to 2")
+        return 2
+
+    def get_manifest(self, product_id: str, build_id: Optional[str] = None,
+                    platform: str = constants.PLATFORM_WINDOWS) -> Optional[Manifest]:
+        """
+        Get manifest for a product build, automatically detecting generation.
+        
+        Args:
+            product_id: GOG product ID
+            build_id: Optional build ID (defaults to latest)
+            platform: Platform
+            
+        Returns:
+            Manifest object or None if not found
+        """
+        build_info = self.get_build_by_id(product_id, build_id, platform)
+        
+        if not build_info:
+            return None
+        
+        generation = build_info["generation"]
+        build = build_info["build"]
+        
+        if generation == 1:
+            # V1: Get manifest using product_id and build_id
+            manifest_json = self.get_manifest_v1(
+                product_id,
+                build.get("build_id", ""),
+                platform=platform
+            )
+            if manifest_json:
+                return Manifest.from_json_v1(manifest_json, product_id)
+        
+        elif generation == 2:
+            # V2: Extract manifest hash from link and fetch
+            link = build.get("link", "")
+            if not link:
+                self.logger.error("No link found in build data")
+                return None
+            
+            # Extract manifest hash from link (last path component)
+            manifest_hash = link.split("/")[-1]
+            manifest_json = self.get_manifest_v2(manifest_hash)
+            
+            if manifest_json:
+                return Manifest.from_json_v2(manifest_json)
+        
+        else:
+            self.logger.error(f"Unsupported generation: {generation}")
+            return None
+        
+        return None
 
