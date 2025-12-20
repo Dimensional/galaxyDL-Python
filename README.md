@@ -16,7 +16,7 @@ This library focuses exclusively on downloading from the Galaxy content delivery
 - ✅ **Support for dependencies and patches**
 - ✅ **Small files container support**
 - ✅ **Secure link generation and CDN URL management**
-- ✅ **MD5/SHA256 verification** for downloaded chunks
+- ✅ **MD5 verification** for downloaded chunks
 - ✅ **Automatic token refresh**
 - ✅ **Progress callback support** for frontends
 - ✅ **Error recovery** with retry logic
