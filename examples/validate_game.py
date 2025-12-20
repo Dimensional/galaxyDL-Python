@@ -309,8 +309,12 @@ def validate_v1_build(game_id: str, timestamp: str, game_name: str, platform: st
 
 
 def validate_v2_build(game_id: str, repository_id: str, game_name: str,
-                      sample_size: int = None, random_seed: int = None):
-    """Validate a V2 build by checking chunks against manifests."""
+                      sample_size: int = None, random_seed: int = None, quick: bool = False):
+    """Validate a V2 build by checking chunks against manifests.
+    
+    Args:
+        quick: If True, only validate compressed data (faster, skips uncompressed verification)
+    """
     
     # Construct paths
     base_dir = Path(game_name) / "v2"
@@ -328,6 +332,7 @@ def validate_v2_build(game_id: str, repository_id: str, game_name: str,
     print(f"  Game ID: {game_id}")
     print(f"  Repository: {repository_id}")
     print(f"  Depot: {depot_path}")
+    print(f"  Mode: {'Quick (compressed only)' if quick else 'Full (compressed + decompressed)'}")
     print()
     
     # Load depot
@@ -442,35 +447,48 @@ def validate_v2_build(game_id: str, repository_id: str, game_name: str,
                 print(f"  File: {chunk.file_path}")
                 continue
             
-            # Decompress and verify uncompressed data
-            try:
-                uncompressed_data = zlib.decompress(compressed_data, 15)
-            except zlib.error as e:
-                errors += 1
-                print(f"\n✗ ERROR [{i}/{len(chunks_to_validate)}] Decompression failed: {md5}")
-                print(f"  Error: {e}")
-                print(f"  File: {chunk.file_path}")
-                continue
-            
-            # Verify uncompressed size
-            actual_uncompressed_size = len(uncompressed_data)
-            if actual_uncompressed_size != chunk.size:
-                failed += 1
-                print(f"\n✗ FAIL [{i}/{len(chunks_to_validate)}] Uncompressed size mismatch: {md5}")
-                print(f"  Expected: {chunk.size:,} bytes")
-                print(f"  Got:      {actual_uncompressed_size:,} bytes")
-                print(f"  File: {chunk.file_path}")
-                continue
-            
-            # Verify uncompressed MD5
-            uncompressed_md5_actual = hashlib.md5(uncompressed_data).hexdigest()
-            if uncompressed_md5_actual != chunk.md5:
-                failed += 1
-                print(f"\n✗ FAIL [{i}/{len(chunks_to_validate)}] Uncompressed MD5 mismatch")
-                print(f"  Expected: {chunk.md5}")
-                print(f"  Got:      {uncompressed_md5_actual}")
-                print(f"  File: {chunk.file_path}")
-                continue
+            # Decompress and verify uncompressed data (unless quick mode)
+            if quick:
+                # Quick mode: just verify decompression works
+                try:
+                    uncompressed_data = zlib.decompress(compressed_data, 15)
+                    actual_uncompressed_size = len(uncompressed_data)
+                except zlib.error as e:
+                    errors += 1
+                    print(f"\n✗ ERROR [{i}/{len(chunks_to_validate)}] Decompression failed: {md5}")
+                    print(f"  Error: {e}")
+                    print(f"  File: {chunk.file_path}")
+                    continue
+            else:
+                # Full mode: verify decompressed data integrity
+                try:
+                    uncompressed_data = zlib.decompress(compressed_data, 15)
+                except zlib.error as e:
+                    errors += 1
+                    print(f"\n✗ ERROR [{i}/{len(chunks_to_validate)}] Decompression failed: {md5}")
+                    print(f"  Error: {e}")
+                    print(f"  File: {chunk.file_path}")
+                    continue
+                
+                # Verify uncompressed size
+                actual_uncompressed_size = len(uncompressed_data)
+                if actual_uncompressed_size != chunk.size:
+                    failed += 1
+                    print(f"\n✗ FAIL [{i}/{len(chunks_to_validate)}] Uncompressed size mismatch: {md5}")
+                    print(f"  Expected: {chunk.size:,} bytes")
+                    print(f"  Got:      {actual_uncompressed_size:,} bytes")
+                    print(f"  File: {chunk.file_path}")
+                    continue
+                
+                # Verify uncompressed MD5
+                uncompressed_md5_actual = hashlib.md5(uncompressed_data).hexdigest()
+                if uncompressed_md5_actual != chunk.md5:
+                    failed += 1
+                    print(f"\n✗ FAIL [{i}/{len(chunks_to_validate)}] Uncompressed MD5 mismatch")
+                    print(f"  Expected: {chunk.md5}")
+                    print(f"  Got:      {uncompressed_md5_actual}")
+                    print(f"  File: {chunk.file_path}")
+                    continue
             
             # All checks passed
             passed += 1
@@ -501,7 +519,10 @@ def validate_v2_build(game_id: str, repository_id: str, game_name: str,
     print(f"  ✗ Failed: {failed:,} ({failed/total*100:.2f}%)")
     print(f"  ✗ Errors: {errors:,} ({errors/total*100:.2f}%)")
     print(f"\nCompressed data validated:   {format_size(total_compressed_bytes)} ({total_compressed_bytes:,} bytes)")
-    print(f"Uncompressed data validated: {format_size(total_uncompressed_bytes)} ({total_uncompressed_bytes:,} bytes)")
+    if quick:
+        print(f"Decompressed data validated: {format_size(total_uncompressed_bytes)} ({total_uncompressed_bytes:,} bytes) [sizes only]")
+    else:
+        print(f"Uncompressed data validated: {format_size(total_uncompressed_bytes)} ({total_uncompressed_bytes:,} bytes)")
     
     if total_uncompressed_bytes > 0:
         ratio = total_compressed_bytes / total_uncompressed_bytes * 100
@@ -530,6 +551,8 @@ def main():
                        help="Number of files/chunks to randomly sample (default: all)")
     parser.add_argument("--random-seed", type=int, metavar="SEED",
                        help="Random seed for reproducible sampling")
+    parser.add_argument("--quick", action="store_true",
+                       help="Quick validation: V2 only validates compressed data + decompression (faster)")
     
     args = parser.parse_args()
     
@@ -549,7 +572,8 @@ def main():
             args.identifier,
             args.game_name,
             sample_size=args.sample,
-            random_seed=args.random_seed
+            random_seed=args.random_seed,
+            quick=args.quick
         )
         sys.exit(0 if success else 1)
     else:
