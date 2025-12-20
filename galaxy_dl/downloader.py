@@ -721,15 +721,41 @@ class GalaxyDownloader:
         url = self.api.get_manifest_url(manifest_id, game_id, platform, timestamp, generation)
         self.api.download_raw(url, output_path)
     
-    def download_raw_chunk(self, compressed_md5: str, output_path: str) -> None:
+    def download_raw_chunk(self, compressed_md5: str, output_path: str, product_id: str = None) -> None:
         """
-        Download V2 chunk in compressed format.
+        Download V2 chunk in compressed format using secure links.
+        
+        V2 chunks require authenticated secure links for download.
         
         Args:
             compressed_md5: The compressedMd5 hash from manifest
             output_path: Where to save the file
+            product_id: Product ID for secure link generation (required)
         """
-        url = self.api.get_chunk_url(compressed_md5)
+        if not product_id:
+            raise ValueError("product_id is required for V2 chunk downloads")
+        
+        # V2 chunks use the path pattern: /{hash[:2]}/{hash[2:4]}/{hash}
+        chunk_subpath = f"/{compressed_md5[:2]}/{compressed_md5[2:4]}/{compressed_md5}"
+        
+        # Get secure link for the product (root path "/")
+        # This returns URL templates with {path} parameter set to /content-system/v2/store/{product_id}
+        endpoints = self.api.get_secure_link(product_id, "/", generation=2, return_full_response=True)
+        
+        if not endpoints:
+            raise ValueError(f"Failed to get secure link for product {product_id}")
+        
+        # Use the first endpoint (usually fastly)
+        endpoint = endpoints[0]
+        
+        # Append the chunk subpath to the path parameter
+        params = endpoint["parameters"].copy()
+        params["path"] = params.get("path", "") + chunk_subpath
+        
+        # Merge URL template with parameters
+        url = self.api._merge_url_with_params(endpoint["url_format"], params)
+        
+        # Download the chunk
         self.api.download_raw(url, output_path)
     
     def download_main_bin(self, game_id: str, platform: str, timestamp: str, output_path: str,

@@ -199,6 +199,156 @@ This library uses the following GOG Galaxy API endpoints:
 | `https://content-system.gog.com/products/{id}/secure_link` | Get secure download links |
 | `https://content-system.gog.com/dependencies/repository` | Get dependencies |
 
+## CDN Structure and Archive Mirroring
+
+### Understanding GOG Galaxy CDN Paths
+
+The archive system (`archive_game.py`) mirrors GOG's exact CDN structure to preserve the 1:1 relationship between local files and remote resources. This documentation explains why paths are structured the way they are.
+
+### V1 Build Structure (Legacy Format)
+
+**Directory Layout:**
+```
+<game_name>/v1/
+├── manifests/{game_id}/{platform}/{timestamp}/
+│   ├── repository.json                    # Build metadata
+│   └── {manifest_uuid}.json               # File manifests (plain JSON)
+└── depots/{game_id}/{platform}/{timestamp}/
+    └── main.bin                           # All files in one blob
+```
+
+**CDN URLs (Static - No Authentication Required):**
+```
+Repository:  https://cdn.gog.com/content-system/v1/manifests/{game_id}/{platform}/{timestamp}/repository.json
+Manifests:   https://cdn.gog.com/content-system/v1/manifests/{game_id}/{platform}/{timestamp}/{manifest_uuid}.json
+```
+
+**CDN URLs (Authenticated - Secure Links Required):**
+```
+main.bin:    Requires secure link authentication
+             Path format: /{platform}/{timestamp}/main.bin
+             
+API Call:    GET https://content-system.gog.com/products/{game_id}/secure_link
+             ?_version=2&type=depot&path=/{platform}/{timestamp}/main.bin
+
+Response:    { "url_format": "{base_url}/token=...{path}",
+               "parameters": { "path": "/content-system/v1/depots/{game_id}/{platform}/{timestamp}/main.bin", ... } }
+```
+
+**How V1 Works:**
+1. Repository contains list of manifest UUIDs
+2. Each manifest contains file entries with offset/size in main.bin
+3. main.bin is a single binary blob containing all files
+4. Files extracted using byte-range requests at specified offsets
+
+**Why This Structure:**
+- `{timestamp}` is the repository ID (e.g., 37794096)
+- Each platform (windows/osx/linux) has separate main.bin
+- Same files appear at different offsets per platform
+- Manifests are plain JSON (no compression)
+
+---
+
+### V2 Build Structure (Current Format)
+
+**Directory Layout:**
+```
+<game_name>/v2/
+├── meta/{hash[:2]}/{hash[2:4]}/{hash}     # Depot & manifest metadata (zlib compressed)
+├── store/{hash[:2]}/{hash[2:4]}/{hash}    # File chunks (zlib compressed)
+└── debug/
+    ├── {hash}_depot.json                  # Human-readable depot
+    └── {hash}_manifest.json               # Human-readable manifests
+```
+
+**CDN URLs (Static URLs - No Authentication Required):**
+```
+Depot:       https://cdn.gog.com/content-system/v2/meta/{hash[:2]}/{hash[2:4]}/{hash}
+Manifests:   https://cdn.gog.com/content-system/v2/meta/{hash[:2]}/{hash[2:4]}/{hash}
+```
+
+**CDN URLs (Authenticated - Secure Links Required):**
+```
+Chunks:      https://cdn.gog.com/content-system/v2/store/{product_id}/{hash[:2]}/{hash[2:4]}/{hash}
+             
+API Call:    GET https://content-system.gog.com/products/{product_id}/secure_link
+             ?_version=2&generation=2&path=/
+
+Response:    { "url_format": "{base_url}/token=...{path}",
+               "parameters": { "path": "/content-system/v2/store/{product_id}", ... } }
+             
+Final URL:   Append "/{hash[:2]}/{hash[2:4]}/{hash}" to path parameter
+             Result: /content-system/v2/store/{product_id}/{hash[:2]}/{hash[2:4]}/{hash}
+```
+
+**How V2 Works:**
+1. Depot metadata lists 1+ manifest hashes
+2. Each manifest contains file entries with chunk lists
+3. Each chunk is a compressed piece of file data
+4. Chunks are deduplicated per-product (same hash = same chunk)
+5. Files assembled by concatenating decompressed chunks
+
+**Why This Structure:**
+- Content-addressed storage: `{hash}` = MD5 of compressed chunk
+- Per-product deduplication: All builds of same game share chunk pool
+- Hash-based paths enable global CDN caching
+- Compressed JSONs saved efficiency (zlib format)
+
+---
+
+### Secure Link Authentication
+
+**Why Some URLs Need Secure Links:**
+
+GOG uses secure links for paid content to:
+- Verify user owns the product
+- Prevent unauthorized downloads
+- Enable CDN token-based authentication
+- Set time-limited download windows
+
+**Static URLs (No Auth):**
+- V1 repository.json and manifests
+- V2 depot and manifest metadata
+
+**Secure Links Required:**
+- V1 main.bin (entire game blob)
+- V2 chunks (individual file pieces)
+
+**How We Optimize:**
+- V1: One secure link call per main.bin download
+- V2: One secure link call per product (reused for all chunks)
+  - Get base path: `/content-system/v2/store/{product_id}`
+  - Append chunk paths: `/{hash[:2]}/{hash[2:4]}/{hash}`
+  - Avoids 3,000+ API calls for large games
+
+**Token Expiration:**
+```
+"expires_at": 1766336033  (Unix timestamp)
+```
+Tokens typically valid for ~1 hour. Archive script completes before expiration for most games.
+
+---
+
+### Archive Benefits
+
+**1:1 CDN Mirror:**
+- Exact replica of GOG's storage structure
+- Can verify against live CDN
+- Easy to understand and audit
+- Preserves original compression
+
+**Delisted Build Support:**
+- Works with repository IDs from gogdb.org
+- No need for game to be in your library
+- Historical build preservation
+
+**Efficient Storage:**
+- V2 deduplication saves space
+- Compressed format preserved
+- Debug JSONs optional for inspection
+
+---
+
 ## Key Improvements from Reference Implementations
 
 ### From lgogdownloader (C++)
