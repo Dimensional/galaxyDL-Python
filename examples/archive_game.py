@@ -8,11 +8,13 @@ Downloads all content from GOG Galaxy CDN in original format:
 - All chunks/blobs (compressed)
 
 Usage:
-    V2: python archive_game.py v2 <game_id> <build_id>
-    V1: python archive_game.py v1 <game_id> <repository_id>
+    V2: python archive_game.py v2 <game_id> <build_id> [<game_name>]
+    V1: python archive_game.py v1 <game_id> <repository_id> [<game_name>] [--platform <windows|osx|linux>]
 
 Example:
     python archive_game.py v2 1207658930 92ab42631ff4742b309bb62c175e6306
+    python archive_game.py v1 1207658930 37794096 "The Witcher 2" --platform windows
+    python archive_game.py v1 1207658930 37794096 "The Witcher 2" --platform osx
 """
 
 import os
@@ -117,6 +119,7 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, timestamp: str,
     """Archive V1 build mirroring CDN structure."""
     print(f"\n=== Archiving V1 Build ===")
     print(f"Game: {game_name} ({game_id})")
+    print(f"Platform: {platform}")
     print(f"Timestamp: {timestamp}")
     
     # Base: <game_name>/v1/manifests/{game_id}/{platform}/{timestamp}/
@@ -175,7 +178,17 @@ def main():
     build_type = sys.argv[1].lower()
     game_id = sys.argv[2]
     build_id = sys.argv[3]
-    game_name = sys.argv[4] if len(sys.argv) > 4 else f"game_{game_id}"
+    game_name = sys.argv[4] if len(sys.argv) > 4 and not sys.argv[4].startswith('--') else f"game_{game_id}"
+    
+    # Parse --platform argument for V1
+    platform = "windows"  # Default to Windows
+    if "--platform" in sys.argv:
+        idx = sys.argv.index("--platform")
+        if idx + 1 < len(sys.argv):
+            platform = sys.argv[idx + 1]
+            if platform not in ["windows", "osx", "linux"]:
+                print(f"ERROR: Invalid platform '{platform}'. Use 'windows', 'osx', or 'linux'.")
+                sys.exit(1)
     
     print("Initializing...")
     auth = AuthManager()
@@ -184,7 +197,7 @@ def main():
     if build_type == "v2":
         archive_v2_build(downloader, game_id, build_id, game_name)
     elif build_type == "v1":
-        archive_v1_build(downloader, game_id, build_id, game_name)
+        archive_v1_build(downloader, game_id, build_id, game_name, platform)
     else:
         print(f"ERROR: Unknown type '{build_type}'. Use 'v1' or 'v2'.")
         sys.exit(1)
