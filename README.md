@@ -33,11 +33,67 @@ Or install dependencies manually:
 pip install requests
 ```
 
-## Quick Start
+## Command-Line Interface
+
+The library includes a minimal CLI (`galaxy-dl`) for authentication and basic operations. For full functionality, use the example scripts in the `examples/` folder.
+
+### Authentication
+
+Get started by authenticating with your GOG account:
+
+```bash
+# Show authentication instructions
+galaxy-dl login
+
+# Authenticate with OAuth code
+galaxy-dl login YOUR_CODE_HERE
+```
+
+The CLI will guide you through:
+1. Visiting the GOG OAuth URL
+2. Logging into your GOG account
+3. Copying the authorization code from the redirect URL
+4. Completing authentication
+
+Credentials are saved to `~/.config/galaxy_dl/auth.json` and automatically used by all CLI commands and example scripts.
+
+### Browse Your Library
+
+```bash
+# List your owned games (IDs only)
+galaxy-dl library
+
+# List with game titles (slower, fetches details)
+galaxy-dl library --details
+
+# Limit number of games shown
+galaxy-dl library --details --limit 20
+```
+
+### View Build Information
+
+```bash
+# Show available builds for a game
+galaxy-dl info 1207658930
+
+# Show builds for a specific platform
+galaxy-dl info 1207658930 --platform osx
+```
+
+### Full-Featured Examples
+
+For actual downloading and validation, use the example scripts:
+- `examples/download_game.py` - Interactive game downloader
+- `examples/validate_game.py` - Validate downloaded archives
+- `examples/archive_game.py` - Mirror entire game to local archive
+- `examples/list_library.py` - Full library browser with details
+- See `examples/` folder for more
+
+## Quick Start (Python API)
 
 ### 1. Authentication
 
-First, authenticate with GOG:
+First, authenticate with GOG (or use `galaxy-dl login`):
 
 ```python
 from galaxy_dl import AuthManager
