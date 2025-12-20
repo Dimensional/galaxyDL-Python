@@ -385,8 +385,7 @@ See the [`examples/`](examples/) directory for practical examples:
 - **`download_game.py`** - Complete download workflow
 - **`build_selection.py`** - Interactive build selector
 - **`delisted_builds.py`** - Access delisted builds using gogdb.org data
-
-Or see [`example.py`](example.py) for a basic example.
+- **`archive_game.py`** - Downloads v1/v2 manifests and files.
 
 ## Development
 
@@ -403,12 +402,6 @@ galaxy_dl/
 └── utils.py             # Utility functions
 ```
 
-### Running Tests
-
-```bash
-pytest tests/
-```
-
 ### Code Style
 
 ```bash
@@ -418,7 +411,7 @@ ruff check galaxy_dl/
 
 ## License
 
-MIT License - See [LICENSE.new](LICENSE.new)
+MIT License - See [LICENSE](LICENSE)
 
 ## Credits
 
