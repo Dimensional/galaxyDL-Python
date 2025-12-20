@@ -84,6 +84,11 @@ class DependencyRepository:
                 # Fallback: try as plain JSON
                 self.repository = response.json()
             
+            # Validate repository was loaded
+            if not self.repository:
+                self.logger.error("Empty repository data")
+                return False
+            
             # Store build_id for tracking
             self.repository["build_id"] = repo_meta.get("build_id", "")
             
@@ -198,6 +203,11 @@ class DependencyManager:
     
     def _save_installed_manifest(self):
         """Save the list of installed dependencies."""
+        # Ensure repository was loaded
+        if not self.repository.repository:
+            self.logger.warning("Cannot save manifest: repository not loaded")
+            return
+        
         data = {
             "installed": sorted(list(self.installed)),
             "build_id": self.repository.repository.get("build_id", ""),
