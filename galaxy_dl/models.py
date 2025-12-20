@@ -236,6 +236,7 @@ class Manifest:
         install_directory: Installation directory name
         depots: List of depots in this manifest
         dependencies: List of dependency IDs
+        items: List of depot items (V1 files or V2 items)
         raw_data: Raw JSON data
     
     Note:
@@ -250,6 +251,7 @@ class Manifest:
     install_directory: str = ""
     depots: List[Depot] = field(default_factory=list)
     dependencies: List[str] = field(default_factory=list)
+    items: List[DepotItem] = field(default_factory=list)  # V1 files or V2 items
     raw_data: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -274,37 +276,54 @@ class Manifest:
 
     @classmethod
     def from_json_v1(cls, manifest_json: Dict[str, Any], product_id: str) -> "Manifest":
-        """Create a Manifest from v1 JSON data."""
+        """
+        Create a Manifest from v1 JSON data.
+        
+        V1 manifests come in two forms:
+        1. Build metadata from builds API with product.depots[] (depot info only)
+        2. Actual manifest with depot.files[] (file list with offset/size)
+        
+        This method handles the actual manifest structure with depot.files[].
+        """
         manifest = cls(
             base_product_id=product_id,
             build_id=manifest_json.get("buildId"),
             generation=1,
             version=1,
-            install_directory=manifest_json.get("product", {}).get("installDirectory", ""),
+            install_directory="",  # V1 manifests don't have install directory in manifest JSON
             raw_data=manifest_json
         )
         
-        # V1 manifests have multiple depots in product.depots
-        # Each depot contains language and game ID info
-        product_data = manifest_json.get("product", {})
-        depots_list = product_data.get("depots", [])
-        
-        for depot_data in depots_list:
-            # Skip redistributable depots (dependencies)
-            if depot_data.get("redist"):
-                continue
+        # Parse V1 manifest structure: depot.files[]
+        depot_data = manifest_json.get("depot", {})
+        if depot_data:
+            # Create a single depot representing the main.bin
+            depot = Depot(
+                product_id=product_id,
+                manifest="",  # V1 doesn't have manifest hash in the file list
+                languages=["*"],  # Language is determined by which manifest you fetch
+                os_bitness=[],
+                size=0,  # Will be calculated from files
+                compressed_size=0
+            )
+            manifest.depots.append(depot)
             
-            # Check if this depot is for our product or DLC
-            game_ids = depot_data.get("gameIDs", [])
-            if product_id in game_ids:
-                depot = Depot.from_json({
-                    "productId": product_id,
-                    "manifest": depot_data.get("manifest", ""),
-                    "languages": depot_data.get("languages", ["*"]),
-                    "size": depot_data.get("size", 0),
-                    "compressedSize": depot_data.get("compressedSize", 0)
-                })
-                manifest.depots.append(depot)
+            # Parse files - each file is stored in main.bin at a specific offset
+            files = depot_data.get("files", [])
+            for file_data in files:
+                # Create DepotItem for V1 file with offset/size info
+                item = DepotItem(
+                    path=file_data.get("path", "").lstrip("/"),
+                    md5=file_data.get("hash", ""),
+                    product_id=product_id,
+                    is_v1_blob=True,
+                    v1_offset=file_data.get("offset", 0),
+                    v1_size=file_data.get("size", 0),
+                    v1_blob_path=file_data.get("url", "main.bin"),  # e.g., "1207658930/main.bin"
+                    total_size_uncompressed=file_data.get("size", 0)
+                )
+                manifest.items.append(item)
+                depot.size += item.v1_size
         
         return manifest
 

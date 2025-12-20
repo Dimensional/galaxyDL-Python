@@ -74,6 +74,116 @@ python examples/download_game.py
 
 ---
 
+### [v1_download.py](v1_download.py)
+**V1 Download - Two Approaches**
+
+Shows both V1 download methods:
+1. **Download whole main.bin blob** - Fastest for complete game, large file
+2. **Extract individual files** - Range requests from main.bin, selective download
+
+```bash
+python examples/v1_download.py
+```
+
+**Use Cases:**
+- **Blob mode**: Download entire game quickly, extract files later
+- **File mode**: Download only specific files (e.g., .exe, .dll)
+
+---
+
+### [v2_download.py](v2_download.py)
+**V2 Download - Two Approaches**
+
+Shows both V2 download methods:
+1. **Raw chunks** - Save compressed ~10MB chunks without decompression
+2. **Processed files** - Download, decompress, and assemble into game files
+
+```bash
+python examples/v2_download.py
+```
+
+**Use Cases:**
+- **Raw mode**: Cache chunks for faster reinstalls, custom processing
+- **Processed mode**: Direct installation, files ready immediately
+
+---
+
+### [archive_game.py](archive_game.py)
+**Complete 1:1 CDN Archival**
+
+Downloads everything in original format for archival/mirroring:
+- **Depot/Repository JSONs** (as served from CDN)
+- **Manifest JSONs** (as served from CDN)
+- **All chunks/blobs** (original CDN format)
+- **Directory structure mirrors CDN URL paths exactly**
+
+```bash
+# V2 build
+python examples/archive_game.py v2 <game_id> <build_id> [game_name]
+
+# V1 build
+python examples/archive_game.py v1 <game_id> <repository_id> [game_name]
+```
+
+**Examples:**
+```bash
+python examples/archive_game.py v2 1207658930 92ab42631ff4742b309bb62c175e6306 "The Witcher 2"
+python examples/archive_game.py v1 1207658930 37794096 "The Witcher 2"
+```
+
+**V2 Directory Structure** (mirrors CDN `/content-system/v2/...`):
+```
+The Witcher 2/
+└── v2/
+    ├── meta/
+    │   ├── 92/ab/92ab42631ff4742b309bb62c175e6306       # Depot (zlib compressed)
+    │   ├── 79/a1/79a1f5fd67f6d0cda22c51f1bd706b31       # Manifest (zlib compressed)
+    │   └── ...                                          # All manifests
+    ├── store/
+    │   ├── 2e/0d/2e0dc2f5707ec0d88d570240ba918bb2       # Chunk (zlib compressed)
+    │   └── ...                                          # All chunks
+    └── debug/
+        ├── 92ab42631ff4742b309bb62c175e6306_depot.json     # Human-readable depot
+        ├── 79a1f5fd67f6d0cda22c51f1bd706b31_manifest.json  # Human-readable manifest
+        └── ...                                              # All decompressed JSONs
+```
+
+**V1 Directory Structure** (mirrors CDN `/content-system/v1/...`):
+```
+The Witcher 2/
+└── v1/
+    └── manifests/
+        └── 1207658930/                                  # Game ID
+            └── windows/                                 # Platform
+                └── 37794096/                            # Repository ID
+                    ├── repository.json                  # Plain JSON
+                    └── 463cd4b2-783e-447a-b17e-a68d601911e3.json  # Manifest UUID
+```
+
+**CDN File Formats:**
+- **V2**: NO file extensions, all content is zlib compressed
+  - **Debug folder**: Human-readable decompressed JSONs with type suffixes (`_depot.json`, `_manifest.json`)
+- **V1**: `.json` extensions, plain JSON (no compression, already human-readable)
+- **Paths match exactly** what appears after `content-system` in CDN URLs
+
+**Use Cases:**
+- **Legal archival/preservation** - Save games exactly as distributed
+- **Offline CDN mirror** - Create local replica for reinstalls
+- **Integrity verification** - Validate using manifest hashes
+- **Custom extraction tools** - Process raw data with your own code
+
+---
+
+## Common Patterns```bash
+python examples/v2_download.py
+```
+
+**Use Cases:**
+- **Raw mode**: Cache chunks for faster reinstalls, custom processing
+- **Processed mode**: Direct installation, files ready immediately
+
+---
+
 ## Common Patterns
 
 ### Authenticating

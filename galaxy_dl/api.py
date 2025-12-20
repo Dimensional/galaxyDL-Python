@@ -51,6 +51,210 @@ class GalaxyAPI:
         # Cache for secure links
         self._secure_link_cache: Dict[str, List[str]] = {}
 
+    # ========== URL Construction Methods ==========
+    
+    def get_depot_url(self, build_id: str) -> str:
+        """Get depot metadata URL for V2 build (build's link field hash)."""
+        return f"{constants.GOG_CDN_ALT}/content-system/v2/meta/{build_id[:2]}/{build_id[2:4]}/{build_id}"
+    
+    def get_repository_url(self, game_id: str, platform: str, timestamp: str) -> str:
+        """Get repository metadata URL for V1 build."""
+        return f"{constants.GOG_CDN_ALT}/content-system/v1/manifests/{game_id}/{platform}/{timestamp}/repository.json"
+    
+    def get_manifest_url(self, manifest_id: str, game_id: Optional[str] = None, platform: Optional[str] = None, timestamp: Optional[str] = None, generation: int = 2) -> str:
+        """Get manifest URL (works for both V1 and V2).
+        
+        For V1: requires game_id, platform, and timestamp
+        For V2: only requires manifest_id (hash)
+        """
+        if generation == 1:
+            if not all([game_id, platform, timestamp]):
+                raise ValueError("V1 manifests require game_id, platform, and timestamp parameters")
+            return f"{constants.GOG_CDN_ALT}/content-system/v1/manifests/{game_id}/{platform}/{timestamp}/{manifest_id}"
+        return f"{constants.GOG_CDN_ALT}/content-system/v2/meta/{manifest_id[:2]}/{manifest_id[2:4]}/{manifest_id}"
+    
+    def get_chunk_url(self, compressed_md5: str) -> str:
+        """Get V2 chunk URL using compressedMd5."""
+        return f"{constants.GOG_CDN_ALT}/content-system/v2/store/{compressed_md5[:2]}/{compressed_md5[2:4]}/{compressed_md5}"
+    
+    def download_raw(self, url: str, output_path: str) -> None:
+        """
+        Download raw content without any processing.
+        
+        Saves file exactly as received (may be zlib compressed JSON).
+        
+        Args:
+            url: URL to download
+            output_path: Path to save the file
+        """
+        import os
+        self._update_auth_header()
+        
+        response = self.session.get(url, timeout=constants.DEFAULT_TIMEOUT)
+        response.raise_for_status()
+        
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        with open(output_path, 'wb') as f:
+            f.write(response.content)
+        
+        self.logger.debug(f"Downloaded raw: {output_path} ({len(response.content)} bytes)")
+    
+    def download_main_bin(self, game_id: str, platform: str, timestamp: str, output_path: str,
+                          num_workers: int = 4) -> None:
+        """
+        Download V1 main.bin file using secure links with parallel byte-range requests.
+        
+        V1 main.bin files require authenticated secure links and cannot be
+        downloaded from static CDN URLs. Uses parallel downloads for better performance.
+        
+        Args:
+            game_id: Product ID
+            platform: Platform (e.g., 'windows', 'osx', 'linux')
+            timestamp: Build timestamp from repository
+            output_path: Path to save main.bin
+            num_workers: Number of parallel download threads (default: 4)
+        """
+        import os
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        
+        # Get secure link for the V1 depot
+        path = f"/{platform}/{timestamp}/"
+        self.logger.info(f"Getting secure link for V1 depot: game={game_id}, path={path}")
+        secure_links = self.get_secure_link(game_id, path, generation=1, return_full_response=True)
+        
+        if not secure_links:
+            raise RuntimeError(f"Failed to get secure links for game {game_id}")
+        
+        self.logger.debug(f"Got {len(secure_links)} secure link endpoints")
+        
+        # Use first endpoint and append main.bin to path
+        endpoint = secure_links[0]
+        self.logger.debug(f"Using endpoint: {endpoint.get('endpoint_name', 'unknown')}")
+        
+        params = endpoint["parameters"].copy()
+        original_path = params.get("path", "")
+        params["path"] = original_path + "/main.bin"
+        
+        # Merge URL template with parameters
+        url = self._merge_url_with_params(endpoint["url_format"], params)
+        
+        self.logger.info(f"Downloading main.bin from: {url[:100]}...")
+        print(f"   URL: {url}")
+        
+        # First, make a HEAD request to get file size without downloading
+        head_response = self.session.head(url, timeout=constants.DEFAULT_TIMEOUT)
+        head_response.raise_for_status()
+        
+        total_size = int(head_response.headers.get('content-length', 0))
+        if total_size == 0:
+            # Fallback to simple streaming if server doesn't support ranges
+            print(f"   Size: Unknown - server doesn't support Content-Length")
+            print(f"   Falling back to simple streaming download...")
+            return self._download_main_bin_simple(url, output_path)
+        
+        print(f"   Size: {total_size:,} bytes ({total_size / 1024 / 1024:.2f} MB)")
+        
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        
+        # Pre-allocate file to avoid fragmentation and ensure we have space
+        print(f"   Pre-allocating file space...")
+        try:
+            with open(output_path, 'wb') as f:
+                f.seek(total_size - 1)
+                f.write(b'\0')
+                f.flush()
+            self.logger.debug(f"Pre-allocated {total_size:,} bytes")
+        except OSError as e:
+            raise RuntimeError(f"Failed to pre-allocate {total_size:,} bytes. Check available disk space.") from e
+        
+        # Calculate chunk ranges for parallel download (50 MiB per chunk)
+        chunk_size = 50 * 1024 * 1024  # 50 MiB
+        ranges = []
+        for start in range(0, total_size, chunk_size):
+            end = min(start + chunk_size - 1, total_size - 1)
+            ranges.append((start, end))
+        
+        print(f"   Downloading with {num_workers} parallel threads ({len(ranges)} chunks)...")
+        
+        # Thread-safe progress tracking
+        downloaded_lock = threading.Lock()
+        downloaded_bytes = [0]  # Use list for mutability in closure
+        
+        def download_range(range_info):
+            """Download a specific byte range."""
+            start, end = range_info
+            chunk_num = ranges.index(range_info)
+            
+            headers = {'Range': f'bytes={start}-{end}'}
+            response = self.session.get(url, headers=headers, stream=True, timeout=constants.DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            
+            # Write to the correct position in file
+            chunk_data = response.content
+            with open(output_path, 'r+b') as f:
+                f.seek(start)
+                f.write(chunk_data)
+            
+            # Update progress
+            with downloaded_lock:
+                downloaded_bytes[0] += len(chunk_data)
+                mb_downloaded = downloaded_bytes[0] / 1024 / 1024
+                mb_total = total_size / 1024 / 1024
+                progress = (downloaded_bytes[0] / total_size) * 100
+                print(f"\r   Progress: {mb_downloaded:.1f} / {mb_total:.1f} MB ({progress:.1f}%) - {len(ranges) - chunk_num} chunks remaining", end='', flush=True)
+            
+            return len(chunk_data)
+        
+        # Download ranges in parallel
+        total_downloaded = 0
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(download_range, r): r for r in ranges}
+            
+            for future in as_completed(futures):
+                try:
+                    chunk_bytes = future.result()
+                    total_downloaded += chunk_bytes
+                except Exception as e:
+                    self.logger.error(f"Failed to download chunk: {e}")
+                    raise
+        
+        print()  # New line after progress
+        
+        # Verify we got the expected size
+        if total_downloaded != total_size:
+            self.logger.warning(f"Size mismatch: expected {total_size:,}, got {total_downloaded:,}")
+        
+        self.logger.info(f"Downloaded main.bin: {output_path} ({total_downloaded:,} bytes)")
+    
+    def _download_main_bin_simple(self, url: str, output_path: str) -> None:
+        """Fallback simple streaming download when server doesn't support ranges."""
+        import os
+        
+        response = self.session.get(url, stream=True, timeout=constants.DEFAULT_TIMEOUT)
+        response.raise_for_status()
+        
+        chunk_size = 50 * 1024 * 1024  # 50 MiB
+        downloaded = 0
+        
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    mb_downloaded = downloaded / 1024 / 1024
+                    print(f"\r   Downloaded: {mb_downloaded:.1f} MB", end='', flush=True)
+        
+        print()
+        self.logger.info(f"Downloaded main.bin: {output_path} ({downloaded:,} bytes)")
+    
+    def _merge_url_with_params(self, url_format: str, parameters: Dict[str, Any]) -> str:
+        """Merge URL template with parameters."""
+        url = url_format
+        for key, value in parameters.items():
+            url = url.replace("{" + key + "}", str(value))
+        return url
+
     def _update_auth_header(self) -> None:
         """Update authorization header with fresh token if needed."""
         auth_header = self.auth_manager.get_auth_header()
@@ -385,36 +589,46 @@ class GalaxyAPI:
         return items
 
     def get_secure_link(self, product_id: str, path: str = "/",
-                       generation: str = constants.GENERATION_2) -> List[str]:
+                       generation: int = 2, return_full_response: bool = False) -> List[Any]:
         """
         Get secure download links for a product.
         
         Args:
             product_id: GOG product ID
             path: Path parameter (default: "/")
-            generation: Generation version
+            generation: Generation version (1 for V1, 2 for V2)
+            return_full_response: If True, return full endpoint data with url_format and parameters
+                                 If False, return just the merged URLs (default for compatibility)
             
         Returns:
-            List of CDN URLs
+            List of CDN URLs (if return_full_response=False)
+            or List of endpoint dicts with 'url_format' and 'parameters' (if return_full_response=True)
         """
-        # Check cache
+        # Check cache (only for URL mode, not full response)
         cache_key = f"{product_id}:{path}:{generation}"
-        if cache_key in self._secure_link_cache:
+        if not return_full_response and cache_key in self._secure_link_cache:
             return self._secure_link_cache[cache_key]
         
-        url = constants.SECURE_LINK_URL.format(
-            product_id=product_id,
-            generation=generation,
-            path=quote(path)
-        )
+        # Build API URL based on generation
+        if generation == 2:
+            url = f"{constants.GOG_CONTENT_SYSTEM}/products/{product_id}/secure_link?_version=2&generation=2&path={quote(path)}"
+        elif generation == 1:
+            url = f"{constants.GOG_CONTENT_SYSTEM}/products/{product_id}/secure_link?_version=2&type=depot&path={quote(path)}"
+        else:
+            raise ValueError(f"Invalid generation: {generation}. Must be 1 or 2.")
         
-        self.logger.info(f"Getting secure link for product {product_id}")
+        self.logger.info(f"Getting secure link for product {product_id} (gen {generation})")
         response = self._get_response_json(url)
         
         if "urls" in response:
-            urls = self._extract_urls_from_response(response)
-            self._secure_link_cache[cache_key] = urls
-            return urls
+            if return_full_response:
+                # Return full endpoint data for V1 main.bin downloads
+                return response["urls"]
+            else:
+                # Extract and merge URLs for normal usage
+                urls = self._extract_urls_from_response(response)
+                self._secure_link_cache[cache_key] = urls
+                return urls
         
         return []
 
