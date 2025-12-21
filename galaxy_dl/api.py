@@ -6,7 +6,7 @@ Provides access to GOG Galaxy content-system API
 
 import json
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union, Tuple
 from urllib.parse import quote
 
 import requests
@@ -727,33 +727,52 @@ class GalaxyAPI:
             self.logger.debug(f"No patch available: {e}")
             return None
 
-    def get_patch_manifest(self, patch_link: str) -> Optional[Dict[str, Any]]:
+    def get_patch_manifest(self, patch_link: str, return_raw: bool = False) -> Optional[Union[Dict[str, Any], Tuple[bytes, Dict[str, Any]]]]:
         """
         Download patch manifest metadata.
         
         Args:
             patch_link: Patch link from get_patch_info()
+            return_raw: If True, return (raw_bytes, decompressed_json) tuple
             
         Returns:
             Patch manifest dict with algorithm, depots, etc.
+            If return_raw=True, returns tuple of (raw_bytes, manifest_dict)
         """
         self.logger.info(f"Downloading patch manifest from: {patch_link}")
         
         try:
-            return self._get_response_json(patch_link)
+            if return_raw:
+                self._update_auth_header()
+                response = self.session.get(patch_link, timeout=constants.DEFAULT_TIMEOUT)
+                response.raise_for_status()
+                
+                # Decompress if needed
+                import zlib
+                if utils.is_zlib_compressed(response.content):
+                    decompressed = zlib.decompress(response.content, constants.ZLIB_WINDOW_SIZE)
+                    manifest_dict = json.loads(decompressed)
+                else:
+                    manifest_dict = response.json()
+                
+                return (response.content, manifest_dict)
+            else:
+                return self._get_response_json(patch_link)
         except Exception as e:
             self.logger.error(f"Failed to get patch manifest: {e}")
             return None
 
-    def get_patch_depot_manifest(self, depot_manifest_id: str) -> Optional[Dict[str, Any]]:
+    def get_patch_depot_manifest(self, depot_manifest_id: str, return_raw: bool = False) -> Optional[Union[Dict[str, Any], Tuple[bytes, Dict[str, Any]]]]:
         """
         Download patch depot manifest (depot-specific patch information).
         
         Args:
             depot_manifest_id: Depot manifest hash from patch manifest
+            return_raw: If True, return (raw_bytes, decompressed_json) tuple
             
         Returns:
             Depot patch manifest with DepotDiff items
+            If return_raw=True, returns tuple of (raw_bytes, manifest_dict)
         """
         # Use galaxy_path to construct URL path
         path = utils.galaxy_path(depot_manifest_id)
@@ -762,7 +781,22 @@ class GalaxyAPI:
         self.logger.info(f"Downloading patch depot manifest: {depot_manifest_id}")
         
         try:
-            return self._get_response_json(url)
+            if return_raw:
+                self._update_auth_header()
+                response = self.session.get(url, timeout=constants.DEFAULT_TIMEOUT)
+                response.raise_for_status()
+                
+                # Decompress if needed
+                import zlib
+                if utils.is_zlib_compressed(response.content):
+                    decompressed = zlib.decompress(response.content, constants.ZLIB_WINDOW_SIZE)
+                    manifest_dict = json.loads(decompressed)
+                else:
+                    manifest_dict = response.json()
+                
+                return (response.content, manifest_dict)
+            else:
+                return self._get_response_json(url)
         except Exception as e:
             self.logger.error(f"Failed to get patch depot manifest: {e}")
             return None
