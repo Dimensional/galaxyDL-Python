@@ -80,3 +80,17 @@ LANGUAGE_CODES = {
 # User agent
 USER_AGENT = "galaxy-dl/{version} (Python)"
 
+# OAuth2 credentials and URLs
+CLIENT_ID = "46899977096215655"
+CLIENT_SECRET = "9d85c43b1482497dbbce61f6e4aa173a433796eeae2ca8c5f6129f2dc4de46d9"
+REDIRECT_URI = "https://embed.gog.com/on_login_success?origin=client"
+
+# OAuth URL for browser-based login
+OAUTH_URL_TEMPLATE = (
+    "https://auth.gog.com/auth?"
+    "client_id={client_id}&"
+    "redirect_uri={redirect_uri}&"
+    "response_type=code&"
+    "layout=client2"
+)
+

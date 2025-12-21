@@ -26,11 +26,55 @@ def setup_logging(verbose: bool = False):
 
 def cmd_login(args):
     """Handle login command."""
+    # GUI login if --gui flag is set
+    if args.gui:
+        try:
+            from galaxy_dl.gui_login import gui_login
+        except ImportError:
+            print("✗ GUI login requires PySide6")
+            print("\nInstall with: pip install galaxy-dl[gui]")
+            return 1
+        
+        print("Opening GUI browser for GOG authentication...")
+        print("Please sign in and authorize the application in the browser window.")
+        print()
+        
+        code = gui_login()
+        
+        if not code:
+            print("\n✗ Login cancelled or failed")
+            return 1
+        
+        print(f"\n✓ Authorization code captured!")
+        
+        # Continue with normal login flow using captured code
+        auth = AuthManager(config_path=args.config)
+        
+        print("Authenticating with GOG...")
+        
+        if auth.login_with_code(code):
+            print(f"✓ Successfully authenticated!")
+            print(f"✓ Credentials saved to: {auth.config_path}")
+            print(f"\nYou can now use:")
+            print(f"  - galaxy-dl library         (list your games)")
+            print(f"  - galaxy-dl info <GAME_ID>  (show builds)")
+            print(f"  - examples/*.py scripts     (download/validate)")
+            print(f"\nAll commands and examples will automatically use these credentials.")
+            return 0
+        else:
+            print("✗ Authentication failed")
+            return 1
+    
+    # Manual login (original behavior)
     # If no code provided, show instructions
     if not args.code:
         print("=" * 80)
         print("GOG AUTHENTICATION INSTRUCTIONS")
         print("=" * 80)
+        print("\nOption 1: GUI Login (Easier!)")
+        print("  Install: pip install galaxy-dl[gui]")
+        print("  Run:     galaxy-dl login --gui")
+        print("\nOption 2: Manual Login")
         print("\nStep 1: Visit this URL in your browser:")
         print("\n  https://auth.gog.com/auth?client_id=46899977096215655&")
         print("  redirect_uri=https%3A%2F%2Fembed.gog.com%2Fon_login_success%3Forigin%3Dclient&")
@@ -211,6 +255,11 @@ def main():
         "code",
         nargs="?",
         help="OAuth authorization code from GOG (the value after 'code=' in the redirect URL)"
+    )
+    login_parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Use GUI browser for login (requires: pip install galaxy-dl[gui])"
     )
     login_parser.set_defaults(func=cmd_login)
     

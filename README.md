@@ -34,6 +34,18 @@ Or install dependencies manually:
 pip install requests
 ```
 
+### Optional: GUI Login
+
+For easier authentication with a GUI browser (no manual code copy/paste):
+
+```bash
+pip install -e .[gui]
+# or
+pip install galaxy-dl[gui]
+```
+
+This installs PySide6 for a Qt6-based OAuth login browser that automatically captures the authorization code.
+
 ## Command-Line Interface
 
 The library includes a minimal CLI (`galaxy-dl`) for authentication and basic operations. For full functionality, use the example scripts in the `examples/` folder.
@@ -42,6 +54,21 @@ The library includes a minimal CLI (`galaxy-dl`) for authentication and basic op
 
 Get started by authenticating with your GOG account:
 
+**Option 1: GUI Login (Easiest!)**
+```bash
+# Install GUI support first
+pip install galaxy-dl[gui]
+
+# Open GUI browser for login
+galaxy-dl login --gui
+```
+
+The GUI browser will:
+- Open directly to the GOG login page
+- Automatically capture the authorization code
+- Complete authentication without manual copy/paste
+
+**Option 2: Manual Login**
 ```bash
 # Show authentication instructions
 galaxy-dl login
@@ -50,11 +77,11 @@ galaxy-dl login
 galaxy-dl login YOUR_CODE_HERE
 ```
 
-The CLI will guide you through:
-1. Visiting the GOG OAuth URL
-2. Logging into your GOG account
-3. Copying the authorization code from the redirect URL
-4. Completing authentication
+The manual process:
+1. Visit the GOG OAuth URL
+2. Log into your GOG account
+3. Copy the authorization code from the redirect URL
+4. Run `galaxy-dl login <CODE>`
 
 Credentials are saved to `~/.config/galaxy_dl/auth.json` and automatically used by all CLI commands and example scripts.
 
