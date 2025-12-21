@@ -322,10 +322,12 @@ class Patch:
             
             # Download patch metadata manifest
             patch_link = patch_info.get('link')
+            
             if not patch_link:
                 return None
             
             patch_data = api_client.get_patch_manifest(patch_link)
+            
             if not patch_data:
                 return None
             
@@ -344,7 +346,14 @@ class Patch:
                 
                 # Check if this depot matches our product IDs and language
                 if depot_product_id in all_product_ids:
-                    if language in depot_languages:
+                    # Flexible language matching:
+                    # - Exact match (e.g., "en-US" matches "en-US")
+                    # - Prefix match (e.g., "en" matches "en-US", "en-GB", etc.)
+                    language_match = any(
+                        lang == language or lang.startswith(f"{language}-")
+                        for lang in depot_languages
+                    )
+                    if language_match:
                         depots_to_fetch.append(depot)
             
             if not depots_to_fetch:

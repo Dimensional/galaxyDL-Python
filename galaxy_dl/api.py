@@ -77,6 +77,10 @@ class GalaxyAPI:
         """Get V2 chunk URL using compressedMd5."""
         return f"{constants.GOG_CDN_ALT}/content-system/v2/store/{compressed_md5[:2]}/{compressed_md5[2:4]}/{compressed_md5}"
     
+    def get_patch_chunk_url(self, compressed_md5: str) -> str:
+        """Get V2 patch chunk URL using compressedMd5."""
+        return f"{constants.GOG_CDN_ALT}/content-system/v2/patches/store/{compressed_md5[:2]}/{compressed_md5[2:4]}/{compressed_md5}"
+    
     def download_raw(self, url: str, output_path: str) -> None:
         """
         Download raw content without any processing.
@@ -638,6 +642,39 @@ class GalaxyAPI:
         
         return []
 
+    def get_patch_secure_link(self, product_id: str, chunk_hash: str, 
+                             client_id: str, client_secret: str) -> List[str]:
+        """
+        Get secure download link for a patch chunk.
+        
+        Patches are stored in /patches/store/ and use clientId/clientSecret for authentication.
+        Based on heroic-gogdl v2.py pattern: get_secure_link(path="/", root="/patches/store")
+        
+        Args:
+            product_id: GOG product ID
+            chunk_hash: Chunk compressedMd5 hash  
+            client_id: Client ID from patch manifest
+            client_secret: Client secret from patch manifest
+            
+        Returns:
+            List of CDN URLs with {GALAXY_PATH} template for patch chunk downloads
+        """
+        # Use root="/patches/store" to change the base storage location
+        from urllib.parse import quote
+        url = (f"{constants.GOG_CONTENT_SYSTEM}/products/{product_id}/secure_link"
+               f"?_version=2&generation=2&path=/"
+               f"&root={quote('/patches/store')}"
+               f"&clientId={client_id}&clientSecret={client_secret}")
+        
+        self.logger.debug(f"Getting patch secure link for chunk: {chunk_hash}")
+        response = self._get_response_json(url)
+        
+        if "urls" in response:
+            # Use standard URL extraction with {GALAXY_PATH} template
+            return self._extract_urls_from_response(response)
+        
+        return []
+
     def get_dependency_link(self, path: str = "") -> List[str]:
         """
         Get dependency download links.
@@ -768,7 +805,12 @@ class GalaxyAPI:
             
             # Add our own path template
             if "{path}" in url_template:
-                parameters["path"] = parameters.get("path", "") + "{GALAXY_PATH}"
+                # Add separator before template if path doesn't already end with one
+                existing_path = parameters.get("path", "")
+                if existing_path and not existing_path.endswith("/"):
+                    parameters["path"] = existing_path + "/{GALAXY_PATH}"
+                else:
+                    parameters["path"] = existing_path + "{GALAXY_PATH}"
             
             url = utils.merge_url_with_params(url_template, parameters)
             

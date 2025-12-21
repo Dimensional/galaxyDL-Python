@@ -31,6 +31,7 @@ MANIFEST_V1_REPOSITORY_URL = "https://cdn.gog.com/content-system/v1/manifests/{p
 
 # Patch URLs
 PATCH_V2_URL = "https://cdn.gog.com/content-system/v2/patches/meta/{path}"
+PATCH_V2_STORE_URL = "https://cdn.gog.com/content-system/v2/patches/store/{path}"
 # Query patch availability between two builds
 PATCHES_QUERY_URL = "https://content-system.gog.com/products/{product_id}/patches?_version=4&from_build_id={from_build_id}&to_build_id={to_build_id}"
 

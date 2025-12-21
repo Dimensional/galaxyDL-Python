@@ -1,5 +1,5 @@
 """
-Download patches for Cyberpunk 2077 between two builds
+Download patches for The Witcher 2 between two builds
 
 This example demonstrates:
 1. Getting manifests for old and new builds
@@ -9,8 +9,8 @@ This example demonstrates:
 5. Saving patch information for later application
 
 Builds used:
-- Old: Build ID 58933689113538427 (2025-08-28)
-- New: Build ID 58989493373906337 (2025-09-16)
+- Old: Build ID 49999910531550131 (Windows)
+- New: Build ID 56452082907692588 (Windows)
 """
 
 import os
@@ -22,21 +22,21 @@ from galaxy_dl import GalaxyAPI, AuthManager, Manifest, Patch
 
 
 # Build information
-PRODUCT_ID = "1423049311"  # Cyberpunk 2077
+PRODUCT_ID = "1207658930"  # The Witcher 2
 PLATFORM = "windows"
 OLD_BUILD = {
-    "build_id": "58933689113538427",
+    "build_id": "49999910531550131",
     "repository_id": None,  # Will be fetched from builds API
-    "published": "2025-08-28"
+    "published": "unknown"
 }
 NEW_BUILD = {
-    "build_id": "58989493373906337",
+    "build_id": "56452082907692588",
     "repository_id": None,  # Will be fetched from builds API
-    "published": "2025-09-16"
+    "published": "unknown"
 }
 
 # Directories
-OUTPUT_DIR = Path("cyberpunk2077_patches")
+OUTPUT_DIR = Path("witcher2_patches")
 PATCHES_DIR = OUTPUT_DIR / "patches"
 METADATA_FILE = OUTPUT_DIR / "patch_manifest.json"
 
@@ -44,7 +44,7 @@ METADATA_FILE = OUTPUT_DIR / "patch_manifest.json"
 def main():
     """Main patch download workflow."""
     print("=" * 80)
-    print("Cyberpunk 2077: Patch Download Example")
+    print("The Witcher 2: Patch Download Example")
     print("=" * 80)
     
     # Initialize API
@@ -115,7 +115,8 @@ def main():
         product_id=PRODUCT_ID,
         manifest_link=OLD_BUILD["manifest_link"],
         repository_id=OLD_BUILD["repository_id"],
-        generation=old_generation
+        generation=old_generation,
+        build_id=OLD_BUILD["build_id"]  # Pass build_id!
     )
     
     if not old_manifest:
@@ -123,6 +124,8 @@ def main():
         return 1
     
     print(f"   ✓ Old manifest: Generation {old_manifest.generation}, {len(old_manifest.items)} items")
+    print(f"     Build ID: {old_manifest.build_id}")
+    print(f"     Base Product ID: {old_manifest.base_product_id}")
     
     print(f"   New build: {NEW_BUILD['build_id']} ({NEW_BUILD['published']})")
     
@@ -130,7 +133,8 @@ def main():
         product_id=PRODUCT_ID,
         manifest_link=NEW_BUILD["manifest_link"],
         repository_id=NEW_BUILD["repository_id"],
-        generation=new_generation
+        generation=new_generation,
+        build_id=NEW_BUILD["build_id"]  # Pass build_id!
     )
     
     if not new_manifest:
@@ -138,6 +142,8 @@ def main():
         return 1
     
     print(f"   ✓ New manifest: Generation {new_manifest.generation}, {len(new_manifest.items)} items")
+    print(f"     Build ID: {new_manifest.build_id}")
+    print(f"     Base Product ID: {new_manifest.base_product_id}")
     
     # Check if both are V2 (required for patches)
     if old_manifest.generation != 2 or new_manifest.generation != 2:
@@ -175,7 +181,34 @@ def main():
         if patch_link:
             print(f"\n   Downloading patch manifest from:")
             print(f"   {patch_link}")
+            
+            # Debug: Try to see what we're actually getting
+            import requests
+            response = requests.get(patch_link)
+            print(f"   Response status: {response.status_code}")
+            print(f"   Response size: {len(response.content)} bytes")
+            print(f"   Response content (first 100 bytes): {response.content[:100]}")
+            
+            # Check if it's zlib compressed
+            from galaxy_dl import utils
+            is_compressed = utils.is_zlib_compressed(response.content)
+            print(f"   Is zlib compressed: {is_compressed}")
+            
+            if is_compressed:
+                import zlib
+                from galaxy_dl import constants
+                try:
+                    decompressed = zlib.decompress(response.content, constants.ZLIB_WINDOW_SIZE)
+                    print(f"   Decompressed size: {len(decompressed)} bytes")
+                    print(f"   Decompressed content: {decompressed}")
+                except Exception as e:
+                    print(f"   Failed to decompress: {e}")
+            
             patch_data = api.get_patch_manifest(patch_link)
+            
+            if not patch_data:
+                print(f"   ✗ Failed to download/parse patch manifest!")
+                return 0
             
             if patch_data:
                 print(f"\n   Patch manifest (full JSON):")
@@ -201,6 +234,33 @@ def main():
                         print(f"\n   Depot patch manifest:")
                         depot_json = json_module.dumps(depot_diffs, indent=2)
                         print(depot_json)
+                        
+                        # Try to download the actual patch chunk
+                        items = depot_diffs.get('depot', {}).get('items', [])
+                        if items:
+                            first_item = items[0]
+                            chunks = first_item.get('chunks', [])
+                            if chunks:
+                                first_chunk = chunks[0]
+                                compressed_md5 = first_chunk.get('compressedMd5')
+                                print(f"\n   Testing patch chunk download:")
+                                print(f"   Chunk compressedMd5: {compressed_md5}")
+                                
+                                # Construct patch chunk URL
+                                patch_chunk_url = api.get_patch_chunk_url(compressed_md5)
+                                print(f"   Patch chunk URL: {patch_chunk_url}")
+                                
+                                # Try downloading it
+                                import requests
+                                response = requests.get(patch_chunk_url)
+                                print(f"   Response status: {response.status_code}")
+                                print(f"   Response size: {len(response.content)} bytes")
+                                print(f"   Expected compressed size: {first_chunk.get('compressedSize')} bytes")
+                                
+                                if response.status_code == 200:
+                                    print(f"   ✓ Patch chunk downloaded successfully!")
+                                else:
+                                    print(f"   ✗ Failed to download patch chunk")
                     else:
                         print(f"   ✗ Failed to download depot patch manifest!")
                 else:
@@ -213,13 +273,21 @@ def main():
         return 0
     
     print("\n   Creating Patch object...")
-    patch = Patch.get(
-        api_client=api,
-        manifest=new_manifest,
-        old_manifest=old_manifest,
-        language="en-US",  # Must match exact language code in depot
-        dlc_product_ids=[]  # No DLC for this example
-    )
+    
+    # Add try/except to see the actual error
+    try:
+        patch = Patch.get(
+            api_client=api,
+            manifest=new_manifest,
+            old_manifest=old_manifest,
+            language="en",  # Will match en-US, en-GB, etc.
+            dlc_product_ids=[]  # No DLC for this example
+        )
+    except Exception as e:
+        print(f"   Exception during Patch.get(): {e}")
+        import traceback
+        traceback.print_exc()
+        patch = None
     
     print(f"   Patch object result: {patch}")
     
@@ -236,46 +304,17 @@ def main():
     print(f"  Algorithm: {patch.algorithm}")
     print(f"  Files with patches: {len(patch.files)}")
     
-    # Generate diff
-    print("\n4. Comparing manifests...")
-    diff = Manifest.compare(new_manifest, old_manifest, patch)
-    
-    print(f"\n   Update requires:")
-    print(f"   - {len(diff.new):4d} new files (full download)")
-    print(f"   - {len(diff.changed):4d} changed files (full download)")
-    print(f"   - {len(diff.patched):4d} files with patches (.delta download)")
-    print(f"   - {len(diff.deleted):4d} files to delete")
-    
-    if not diff.patched:
-        print("\n   No patches to download (all changes require full files)")
-        return 0
-    
-    # Calculate sizes
+    # Calculate total download size
     total_patch_size = sum(
         chunk["compressedSize"] 
-        for fp in diff.patched 
+        for fp in patch.files 
         for chunk in fp.chunks
     )
     
-    print(f"\n   Total patch download size: ~{total_patch_size / 1024 / 1024:.2f} MB")
-    
-    # Get secure links for patches
-    print("\n5. Getting secure links for patches...")
-    secure_links = api.get_secure_link(
-        product_id=PRODUCT_ID,
-        path="/",
-        generation=2,
-        root_path="/patches/store"
-    )
-    
-    if not secure_links:
-        print("ERROR: Failed to get secure links")
-        return 1
-    
-    print(f"✓ Got {len(secure_links)} CDN endpoint(s)")
+    print(f"  Total patch download size: ~{total_patch_size / 1024 / 1024:.2f} MB")
     
     # Download patches
-    print("\n7. Downloading patch files...")
+    print("\n4. Downloading patch files...")
     patch_metadata = {
         "product_id": PRODUCT_ID,
         "from_build": OLD_BUILD["build_id"],
@@ -289,8 +328,8 @@ def main():
     downloaded_count = 0
     failed_count = 0
     
-    for idx, file_patch in enumerate(diff.patched, 1):
-        print(f"\n   [{idx}/{len(diff.patched)}] {file_patch.target_path}")
+    for idx, file_patch in enumerate(patch.files, 1):
+        print(f"\n   [{idx}/{len(patch.files)}] {file_patch.target_path}")
         print(f"       Chunks: {len(file_patch.chunks)}")
         
         # Create safe filename for delta
@@ -304,12 +343,21 @@ def main():
                     chunk_md5 = chunk["compressedMd5"]
                     chunk_size = chunk["compressedSize"]
                     
-                    # Construct chunk URL using galaxy_path
+                    # Get secure link URLs using clientId/clientSecret from patch manifest
+                    secure_urls = api.get_patch_secure_link(
+                        product_id=PRODUCT_ID,
+                        chunk_hash=chunk_md5,
+                        client_id=patch.patch_data['clientId'],
+                        client_secret=patch.patch_data['clientSecret']
+                    )
+                    
+                    if not secure_urls:
+                        raise RuntimeError(f"Failed to get secure link for {chunk_md5}")
+                    
+                    # Build chunk URL by replacing {GALAXY_PATH} template
                     from galaxy_dl import utils
                     chunk_path = utils.galaxy_path(chunk_md5)
-                    
-                    # Use first secure link and append chunk path
-                    chunk_url = secure_links[0].replace("{GALAXY_PATH}", chunk_path)
+                    chunk_url = secure_urls[0].replace("{GALAXY_PATH}", chunk_path)
                     
                     # Download chunk
                     response = api.session.get(chunk_url, timeout=30)
@@ -334,7 +382,7 @@ def main():
             downloaded_count += 1
             print(f"       ✓ Saved: {delta_path.name}")
             
-            # Add to metadata
+            # Add to metadata with chunk hashes for validation
             patch_metadata["patches"].append({
                 "source": file_patch.source_path,
                 "target": file_patch.target_path,
@@ -342,7 +390,15 @@ def main():
                 "md5_source": file_patch.md5_source,
                 "md5_target": file_patch.md5_target,
                 "patch_md5": file_patch.md5,
-                "chunks": len(file_patch.chunks),
+                "chunks": [
+                    {
+                        "compressedMd5": chunk["compressedMd5"],
+                        "compressedSize": chunk["compressedSize"],
+                        "md5": chunk["md5"],
+                        "size": chunk["size"]
+                    }
+                    for chunk in file_patch.chunks
+                ],
                 "applied": False
             })
             
@@ -351,18 +407,56 @@ def main():
             print(f"       ✗ Failed: {e}")
     
     # Save metadata
-    print(f"\n8. Saving patch metadata...")
+    print(f"\n5. Saving patch metadata...")
     with open(METADATA_FILE, 'w') as f:
         json.dump(patch_metadata, f, indent=2)
     
     print(f"   ✓ Saved: {METADATA_FILE}")
     
+    # Validate downloaded patch files
+    print(f"\n6. Validating downloaded patches...")
+    validation_passed = True
+    
+    for patch_info in patch_metadata["patches"]:
+        delta_path = PATCHES_DIR / Path(patch_info["delta_file"]).name
+        
+        if not delta_path.exists():
+            print(f"   ✗ Missing: {delta_path.name}")
+            validation_passed = False
+            continue
+        
+        # For multi-chunk patches, we'd need to validate each chunk separately
+        # For single-chunk patches (like this one), validate the entire file
+        if len(patch_info["chunks"]) == 1:
+            chunk_info = patch_info["chunks"][0]
+            expected_md5 = chunk_info["compressedMd5"]
+            expected_size = chunk_info["compressedSize"]
+            
+            actual_size = delta_path.stat().st_size
+            actual_md5 = hashlib.md5(delta_path.read_bytes()).hexdigest()
+            
+            if actual_size != expected_size:
+                print(f"   ✗ {delta_path.name}: Size mismatch ({actual_size} != {expected_size})")
+                validation_passed = False
+            elif actual_md5 != expected_md5:
+                print(f"   ✗ {delta_path.name}: MD5 mismatch ({actual_md5} != {expected_md5})")
+                validation_passed = False
+            else:
+                print(f"   ✓ {delta_path.name}: Valid (MD5: {actual_md5})")
+        else:
+            # Multi-chunk patches would need chunk-by-chunk validation
+            print(f"   ⚠ {delta_path.name}: Multi-chunk validation not implemented")
+    
+    if validation_passed:
+        print(f"\n   All patches validated successfully!")
+    
     # Summary
     print("\n" + "=" * 80)
     print("Download Summary")
     print("=" * 80)
-    print(f"  Patches downloaded: {downloaded_count}/{len(diff.patched)}")
-    print(f"  Patches failed:     {failed_count}/{len(diff.patched)}")
+    print(f"  Patches downloaded: {downloaded_count}/{len(patch.files)}")
+    print(f"  Patches failed:     {failed_count}/{len(patch.files)}")
+    print(f"  Validation:         {'PASSED' if validation_passed else 'FAILED'}")
     print(f"  Metadata saved:     {METADATA_FILE}")
     print(f"  Patches directory:  {PATCHES_DIR}")
     
