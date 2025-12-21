@@ -14,6 +14,7 @@ This library focuses exclusively on downloading from the Galaxy content delivery
 - ✅ **Generation Auto-Detection** - Automatically detect and handle V1 or V2 manifests
 - ✅ **Handle compressed chunks** with zlib decompression  
 - ✅ **Support for dependencies and patches**
+- ✅ **Dependency Management** - Separate system for downloading game dependencies (MSVC, DirectX, .NET, etc.)
 - ✅ **Small files container support**
 - ✅ **Secure link generation and CDN URL management**
 - ✅ **MD5 verification** for downloaded chunks
@@ -80,12 +81,35 @@ galaxy-dl info 1207658930
 galaxy-dl info 1207658930 --platform osx
 ```
 
+### Manage Dependencies
+
+```bash
+# Initialize dependency system (downloads repository)
+manage_dependencies.py init
+
+# List all available dependencies
+manage_dependencies.py list-all
+
+# List dependencies for a specific game
+manage_dependencies.py list-game path/to/depot.json
+
+# Download dependencies for a game
+manage_dependencies.py download-game path/to/depot.json
+
+# Include redistributables (MSVC, DirectX, .NET)
+manage_dependencies.py download-game path/to/depot.json --include-redist
+
+# Use custom storage location
+manage_dependencies.py init --path ./my-dependencies
+```
+
 ### Full-Featured Examples
 
 For actual downloading and validation, use the example scripts:
 - `examples/download_game.py` - Interactive game downloader
 - `examples/validate_game.py` - Validate downloaded archives
 - `examples/archive_game.py` - Mirror entire game to local archive
+- `examples/manage_dependencies.py` - Dependency manager (init, list, download)
 - `examples/list_library.py` - Full library browser with details
 - See `examples/` folder for more
 
@@ -200,6 +224,7 @@ The library is organized into focused modules:
 - **`galaxy_dl.auth`** - Authentication manager for OAuth token management  
 - **`galaxy_dl.models`** - Data models for depots, chunks, manifests
 - **`galaxy_dl.downloader`** - Unified download manager (V1 and V2, multi-threaded)
+- **`galaxy_dl.dependencies`** - Dependency management system (MSVC, DirectX, .NET, etc.)
 - **`galaxy_dl.utils`** - Utility functions for hashing, compression, path handling
 - **`galaxy_dl.constants`** - API endpoints and configuration constants
 - **`galaxy_dl.cli`** - Command-line interface (basic)
@@ -253,7 +278,134 @@ This library uses the following GOG Galaxy API endpoints:
 | `https://cdn.gog.com/content-system/v2/meta/{path}` | Get v2 manifests |
 | `https://cdn.gog.com/content-system/v1/manifests/...` | Get v1 manifests |
 | `https://content-system.gog.com/products/{id}/secure_link` | Get secure download links |
-| `https://content-system.gog.com/dependencies/repository` | Get dependencies |
+| `https://content-system.gog.com/dependencies/repository` | Get dependency repository (66 dependencies) |
+| `https://cdn.gog.com/content-system/v2/dependencies/meta/{path}` | Get dependency manifests |
+| `https://content-system.gog.com/open_link` | Get secure links for dependencies |
+
+## Dependencies
+
+GOG Galaxy uses a separate dependency system for runtime redistributables (MSVC, DirectX, .NET Framework, etc.) and game-specific tools (DOSBox variants). Dependencies are always in V2 format, even for V1 games.
+
+### Dependency System Features
+
+- **Separate Storage** - Dependencies stored independently from game files
+- **Always V2 Format** - Uses chunk-based V2 system regardless of game version
+- **66 Available Dependencies** - Includes MSVC 2005-2019, DirectX, .NET 2-9, DOSBox variants, and more
+- **Automatic Filtering** - Excludes `__redist` installers by default (opt-in with `--include-redist`)
+- **Shared Resource Pool** - One copy serves all games requiring it
+- **Chunk Verification** - MD5 and size validation for reliability
+
+### Dependency Architecture
+
+**Module:** `galaxy_dl/dependencies.py`
+
+**Classes:**
+- `DependencyInfo` - Metadata about a single dependency
+- `DependencyRepository` - Manages 66-dependency repository with filtering
+- `DependencyManager` - Handles downloads, verification, and tracking
+
+**Storage Structure:**
+```
+dependencies/
+├── repository.json                   # 66 available dependencies metadata
+├── installed.json                    # Tracks installed dependencies
+├── debug/{hash}_manifest.json        # Human-readable manifests
+└── v2/
+    ├── meta/XX/YY/{hash}            # Compressed manifests (CDN format)
+    └── store/XX/YY/{hash}           # Dependency chunks
+```
+
+### Using the Dependency Manager
+
+**Initialize:**
+```python
+from galaxy_dl import GalaxyAPI, AuthManager
+from galaxy_dl.dependencies import DependencyManager
+
+auth = AuthManager()
+api = GalaxyAPI(auth)
+
+manager = DependencyManager(api, base_path="./dependencies")
+manager.initialize()  # Downloads repository with 66 dependencies
+```
+
+**List Dependencies for a Game:**
+```python
+# Get dependency IDs from depot manifest
+dependency_ids = depot.get("dependencies", [])
+
+# Filter and list
+dependencies = manager.get_dependencies_for_game(
+    dependency_ids,
+    include_redist=True  # Include MSVC, DirectX, .NET installers
+)
+
+for dep in dependencies:
+    print(f"{dep.id}: {dep.size / 1024 / 1024:.1f} MB")
+```
+
+**Download Dependencies:**
+```python
+for dep in dependencies:
+    print(f"Downloading {dep.id}...")
+    manager.download_dependency(dep, verify=True)
+    print(f"Installed to: {dep.executable_path}")
+```
+
+### Dependency Types
+
+**Redistributables (`__redist`):**
+- `MSVC2005` through `MSVC2019` (x86 and x64)
+- `DirectX` - DirectX End-User Runtime
+- `dotNet2`, `dotNet35`, `dotNet4`, `dotNetDesktop9` (.NET Framework versions)
+- `AdobeAir` - Adobe AIR runtime
+- Filtered by default, use `--include-redist` to download
+
+**Game-Specific Tools:**
+- `DOSBox_063`, `DOSBox_072`, `DOSBox_073`, `DOSBox_074` - Different DOSBox versions
+- `DOSBox_glide` - DOSBox with Glide support
+- `ISI` - Install Script Interpreter
+- Game-specific dependencies included by default
+
+### Example: The Witcher 2 Dependencies
+
+The Witcher 2 requires 4 dependencies (all `__redist`):
+```json
+["MSVC2010", "MSVC2010_x64", "DirectX", "dotNet4"]
+```
+
+Download results:
+- 164 chunks total
+- 163.09 MB download size
+- All chunks verified with MD5
+
+### Dependency API Endpoints
+
+**Repository (No Authentication):**
+```
+https://content-system.gog.com/dependencies/repository?generation=2
+```
+Returns metadata with repository_manifest URL (zlib compressed).
+
+**Manifests (No Authentication):**
+```
+https://cdn.gog.com/content-system/v2/dependencies/meta/{hash[:2]}/{hash[2:4]}/{hash}
+```
+
+**Chunks (Requires Secure Link):**
+```
+API: https://content-system.gog.com/open_link
+Path: /dependencies/store/{hash[:2]}/{hash[2:4]}/{hash}
+```
+Note: Uses `open_link` endpoint (no product_id required), unlike game chunks.
+
+### No Version History
+
+Dependencies use a **current-state-only** model:
+- Single `build_id` in repository (no version history)
+- Each dependency has one manifest hash (current version)
+- Different major versions use different dependency IDs (e.g., `MSVC2010` vs `MSVC2015`)
+- Designed for "latest stable runtime" rather than historical preservation
 
 ## CDN Structure and Archive Mirroring
 
@@ -441,7 +593,8 @@ See the [`examples/`](examples/) directory for practical examples:
 - **`download_game.py`** - Complete download workflow
 - **`build_selection.py`** - Interactive build selector
 - **`delisted_builds.py`** - Access delisted builds using gogdb.org data
-- **`archive_game.py`** - Downloads v1/v2 manifests and files.
+- **`archive_game.py`** - Downloads v1/v2 manifests and files
+- **`manage_dependencies.py`** - Dependency manager (init, list, download)
 
 ## Development
 
