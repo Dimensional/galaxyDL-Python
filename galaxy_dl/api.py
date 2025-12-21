@@ -903,7 +903,7 @@ class GalaxyAPI:
             return manifest
 
     def get_manifest_direct(self, product_id: str,
-                          generation: int,
+                          generation: Optional[int] = None,
                           repository_id: Optional[str] = None,
                           manifest_link: Optional[str] = None,
                           build_id: Optional[str] = None,
@@ -914,11 +914,13 @@ class GalaxyAPI:
         Use this when you have specific build details from external sources (gogdb.org)
         or cached data and want to bypass the builds API query.
         
+        NEW: Set generation=None to auto-detect by trying both V1 and V2!
+        
         Args:
             product_id: GOG product ID
-            generation: Generation (1 or 2)
-            repository_id: Required for V1 - legacy_build_id / repository timestamp
-            manifest_link: Required for V2 - full manifest URL from build
+            generation: Generation (1, 2, or None for auto-detect)
+            repository_id: Build identifier (V1 timestamp or V2 hash)
+            manifest_link: Optional V2 manifest URL (if known)
             build_id: Optional - for tracking purposes
             platform: Platform (used for V1 only)
             
@@ -934,14 +936,59 @@ class GalaxyAPI:
             ...     platform="osx"
             ... )
             
-        Example (V2 with cached link):
+        Example (V2 with hash):
             >>> manifest = api.get_manifest_direct(
             ...     product_id="1207658924",
             ...     generation=2,
-            ...     manifest_link="https://cdn.gog.com/content-system/v2/meta/...",
-            ...     build_id="58654815952891330"
+            ...     repository_id="e518c17d90805e8e3998a35fac8b8505"
             ... )
+            
+        Example (Auto-detect):
+            >>> # Don't know if it's V1 or V2? Let it figure it out!
+            >>> manifest = api.get_manifest_direct(
+            ...     product_id="1207658924",
+            ...     repository_id="37794096",  # Could be V1 timestamp or V2 hash
+            ...     platform="windows"
+            ... )
+            >>> print(f"Auto-detected V{manifest.generation}")
         """
+        # Auto-detect generation by trying both V1 and V2
+        if generation is None:
+            if not repository_id:
+                raise ValueError("repository_id required for auto-detection")
+            
+            self.logger.info(f"Auto-detecting generation for {product_id}/{repository_id}")
+            
+            # Try V1 first (timestamp in path)
+            self.logger.debug(f"Trying V1: repository.json at {repository_id}")
+            manifest_json = self.get_manifest_v1_direct(product_id, repository_id, platform)
+            
+            if manifest_json:
+                self.logger.info(f"Auto-detected V1 manifest")
+                manifest = Manifest.from_json_v1(manifest_json, product_id)
+                manifest.build_id = build_id
+                manifest.repository_id = repository_id
+                manifest.generation = 1
+                return manifest
+            
+            # Try V2 (hash with 2-level prefix)
+            self.logger.debug(f"V1 failed, trying V2: depot hash {repository_id}")
+            depot_url = self.get_depot_url(repository_id)
+            
+            try:
+                manifest_json = self._get_response_json(depot_url)
+                if manifest_json:
+                    self.logger.info(f"Auto-detected V2 manifest")
+                    manifest = Manifest.from_json_v2(manifest_json)
+                    manifest.build_id = build_id
+                    manifest.generation = 2
+                    return manifest
+            except Exception as e:
+                self.logger.debug(f"V2 also failed: {e}")
+            
+            self.logger.error(f"Could not auto-detect generation - both V1 and V2 failed")
+            return None
+        
         if generation == 1:
             if not repository_id:
                 raise ValueError("repository_id required for V1 manifests")
@@ -957,11 +1004,17 @@ class GalaxyAPI:
             manifest.repository_id = repository_id
             return manifest
         else:
-            if not manifest_link:
-                raise ValueError("manifest_link required for V2 manifests")
-            
-            self.logger.info(f"Getting V2 manifest directly: {manifest_link}")
-            manifest_json = self._get_response_json(manifest_link)
+            # V2 - need either manifest_link or repository_id (depot hash)
+            if manifest_link:
+                self.logger.info(f"Getting V2 manifest directly: {manifest_link}")
+                manifest_json = self._get_response_json(manifest_link)
+            elif repository_id:
+                # repository_id is the depot hash for V2
+                depot_url = self.get_depot_url(repository_id)
+                self.logger.info(f"Getting V2 depot directly: {repository_id}")
+                manifest_json = self._get_response_json(depot_url)
+            else:
+                raise ValueError("Either manifest_link or repository_id required for V2 manifests")
             
             if not manifest_json:
                 return None

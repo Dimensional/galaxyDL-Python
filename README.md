@@ -175,7 +175,7 @@ manifest = api.get_manifest("1207658924", build_id="3101", platform="windows")
 
 **Option C: Direct access (for delisted builds from gogdb.org):**
 ```python
-# V1 with repository_id from gogdb.org
+# V1 with repository_id (timestamp) from gogdb.org
 manifest = api.get_manifest_direct(
     product_id="1207658924",
     generation=1,
@@ -183,12 +183,21 @@ manifest = api.get_manifest_direct(
     platform="windows"
 )
 
-# V2 with manifest link
+# V2 with repository_id (depot hash) 
 manifest = api.get_manifest_direct(
     product_id="1207658924",
     generation=2,
-    manifest_link="https://cdn.gog.com/content-system/v2/meta/..."
+    repository_id="e518c17d90805e8e3998a35fac8b8505"  # Depot hash
 )
+
+# Auto-detect: Don't know V1 or V2? Just provide the ID!
+manifest = api.get_manifest_direct(
+    product_id="1207658924",
+    repository_id="37794096",  # Could be V1 timestamp OR V2 hash
+    platform="windows"
+    # generation=None tries both V1 and V2 automatically!
+)
+print(f"Auto-detected V{manifest.generation}")
 ```
 
 ### 5. Download Files
@@ -231,15 +240,22 @@ The library is organized into focused modules:
 
 ### V1 vs V2 Manifests
 
-**Important**: Galaxy uses two different manifest formats (auto-detected):
+**Important**: Galaxy uses two different manifest formats with **automatic detection**:
 
 - **V1 (Legacy)**: Single `main.bin` blob containing all files at specific offsets
   - Uses multi-threaded HTTP range requests for parallel download
-  - Automatically detected when `generation == 1`
+  - Identified by numeric timestamp (e.g., `37794096`)
+  - URL: `/content-system/v1/manifests/{game_id}/{platform}/{timestamp}/repository.json`
   
 - **V2 (Current)**: Files split into ~10MB chunks, like Steam CDN
   - Uses multi-threaded chunk downloads
-  - Automatically detected when `generation == 2`
+  - Identified by hex hash (e.g., `e518c17d90805e8e3998a35fac8b8505`)
+  - URL: `/content-system/v2/meta/{hash[:2]}/{hash[2:4]}/{hash}`
+
+**Auto-Detection Methods:**
+
+1. **From builds API** - Build dict contains `generation` field (recommended)
+2. **From repository_id** - Try both V1 and V2 URLs, use whichever succeeds
 
 The `GalaxyDownloader` handles both transparently. See [GENERATION_DETECTION.md](GENERATION_DETECTION.md) and [DELISTED_BUILDS.md](DELISTED_BUILDS.md) for details.
 
