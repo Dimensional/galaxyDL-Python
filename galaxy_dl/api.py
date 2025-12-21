@@ -589,7 +589,8 @@ class GalaxyAPI:
         return items
 
     def get_secure_link(self, product_id: str, path: str = "/",
-                       generation: int = 2, return_full_response: bool = False) -> List[Any]:
+                       generation: int = 2, return_full_response: bool = False,
+                       root_path: Optional[str] = None) -> List[Any]:
         """
         Get secure download links for a product.
         
@@ -599,25 +600,30 @@ class GalaxyAPI:
             generation: Generation version (1 for V1, 2 for V2)
             return_full_response: If True, return full endpoint data with url_format and parameters
                                  If False, return just the merged URLs (default for compatibility)
+            root_path: Optional root path for special endpoints (e.g., "/patches/store" for patches)
             
         Returns:
             List of CDN URLs (if return_full_response=False)
             or List of endpoint dicts with 'url_format' and 'parameters' (if return_full_response=True)
         """
         # Check cache (only for URL mode, not full response)
-        cache_key = f"{product_id}:{path}:{generation}"
+        cache_key = f"{product_id}:{path}:{generation}:{root_path}"
         if not return_full_response and cache_key in self._secure_link_cache:
             return self._secure_link_cache[cache_key]
         
         # Build API URL based on generation
         if generation == 2:
             url = f"{constants.GOG_CONTENT_SYSTEM}/products/{product_id}/secure_link?_version=2&generation=2&path={quote(path)}"
+            # Add root_path for patches
+            if root_path:
+                url += f"&root_path={quote(root_path)}"
         elif generation == 1:
             url = f"{constants.GOG_CONTENT_SYSTEM}/products/{product_id}/secure_link?_version=2&type=depot&path={quote(path)}"
+            # V1 doesn't use root_path
         else:
             raise ValueError(f"Invalid generation: {generation}. Must be 1 or 2.")
         
-        self.logger.info(f"Getting secure link for product {product_id} (gen {generation})")
+        self.logger.info(f"Getting secure link for product {product_id} (gen {generation}, root={root_path})")
         response = self._get_response_json(url)
         
         if "urls" in response:
@@ -651,6 +657,78 @@ class GalaxyAPI:
             return self._extract_urls_from_response(response)
         
         return []
+
+    def get_patch_info(self, product_id: str, from_build_id: str, to_build_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Query GOG for patch availability between two builds.
+        
+        Args:
+            product_id: GOG product ID
+            from_build_id: Source build ID
+            to_build_id: Target build ID
+            
+        Returns:
+            Patch info dict with 'link' to patch manifest, or None if no patch available
+            
+        Example:
+            >>> patch_info = api.get_patch_info("1207658924", "12345", "12346")
+            >>> if patch_info:
+            ...     patch_link = patch_info['link']
+        """
+        url = constants.PATCHES_QUERY_URL.format(
+            product_id=product_id,
+            from_build_id=from_build_id,
+            to_build_id=to_build_id
+        )
+        
+        self.logger.info(f"Querying patch availability: {from_build_id} -> {to_build_id}")
+        
+        try:
+            response = self._get_response_json(url)
+            return response
+        except Exception as e:
+            self.logger.debug(f"No patch available: {e}")
+            return None
+
+    def get_patch_manifest(self, patch_link: str) -> Optional[Dict[str, Any]]:
+        """
+        Download patch manifest metadata.
+        
+        Args:
+            patch_link: Patch link from get_patch_info()
+            
+        Returns:
+            Patch manifest dict with algorithm, depots, etc.
+        """
+        self.logger.info(f"Downloading patch manifest from: {patch_link}")
+        
+        try:
+            return self._get_response_json(patch_link)
+        except Exception as e:
+            self.logger.error(f"Failed to get patch manifest: {e}")
+            return None
+
+    def get_patch_depot_manifest(self, depot_manifest_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Download patch depot manifest (depot-specific patch information).
+        
+        Args:
+            depot_manifest_id: Depot manifest hash from patch manifest
+            
+        Returns:
+            Depot patch manifest with DepotDiff items
+        """
+        # Use galaxy_path to construct URL path
+        path = utils.galaxy_path(depot_manifest_id)
+        url = constants.PATCH_V2_URL.format(path=path)
+        
+        self.logger.info(f"Downloading patch depot manifest: {depot_manifest_id}")
+        
+        try:
+            return self._get_response_json(url)
+        except Exception as e:
+            self.logger.error(f"Failed to get patch depot manifest: {e}")
+            return None
 
     def _extract_urls_from_response(self, response: Dict[str, Any],
                                     cdn_priority: Optional[List[str]] = None) -> List[str]:

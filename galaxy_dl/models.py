@@ -223,6 +223,171 @@ class Depot:
 
 
 @dataclass
+class FilePatchDiff:
+    """
+    Represents a patch for updating one file to another using xdelta3.
+    
+    Attributes:
+        md5_source: MD5 hash of the source (old) file
+        md5_target: MD5 hash of the target (new) file
+        source_path: Path to source file
+        target_path: Path to target file
+        md5: MD5 hash of the patch file itself
+        chunks: List of patch chunks to download
+        old_file: Reference to old DepotItem (populated during comparison)
+        new_file: Reference to new DepotItem (populated during comparison)
+    """
+    md5_source: str
+    md5_target: str
+    source_path: str
+    target_path: str
+    md5: str
+    chunks: List[Dict[str, Any]] = field(default_factory=list)
+    old_file: Optional[DepotItem] = None
+    new_file: Optional[DepotItem] = None
+
+    @classmethod
+    def from_json(cls, patch_json: Dict[str, Any]) -> "FilePatchDiff":
+        """Create FilePatchDiff from JSON data."""
+        return cls(
+            md5_source=patch_json.get("md5_source", ""),
+            md5_target=patch_json.get("md5_target", ""),
+            source_path=patch_json.get("path_source", "").replace("\\", "/"),
+            target_path=patch_json.get("path_target", "").replace("\\", "/"),
+            md5=patch_json.get("md5", ""),
+            chunks=patch_json.get("chunks", [])
+        )
+
+
+@dataclass
+class Patch:
+    """
+    Represents patch information for updating from one build to another.
+    
+    Attributes:
+        patch_data: Raw patch metadata from GOG
+        files: List of file patches (FilePatchDiff)
+        algorithm: Patch algorithm (should be 'xdelta3')
+        from_build_id: Source build ID
+        to_build_id: Target build ID
+    """
+    patch_data: Dict[str, Any] = field(default_factory=dict)
+    files: List[FilePatchDiff] = field(default_factory=list)
+    algorithm: str = "xdelta3"
+    from_build_id: Optional[str] = None
+    to_build_id: Optional[str] = None
+
+    @classmethod
+    def get(cls, api_client, manifest: "Manifest", old_manifest: "Manifest",
+            language: str, dlc_product_ids: List[str]) -> Optional["Patch"]:
+        """
+        Query GOG API for patch availability and download patch manifests.
+        
+        Args:
+            api_client: GalaxyAPI instance for making requests
+            manifest: New/target manifest
+            old_manifest: Old/source manifest
+            language: Language code (e.g., "en")
+            dlc_product_ids: List of DLC product IDs to include
+            
+        Returns:
+            Patch object if patch is available, None otherwise
+            
+        Note:
+            Only works for V2 manifests. Returns None for V1 manifests.
+        """
+        # Import here to avoid circular dependency
+        from galaxy_dl import utils
+        
+        # V1 manifests don't support patches
+        if manifest.generation == 1 or old_manifest.generation == 1:
+            return None
+        
+        # Both manifests must have build IDs
+        from_build = old_manifest.build_id
+        to_build = manifest.build_id
+        if not from_build or not to_build:
+            return None
+        
+        # Query patch availability
+        try:
+            patch_info = api_client.get_patch_info(
+                manifest.base_product_id,
+                from_build,
+                to_build
+            )
+            
+            if not patch_info or patch_info.get('error'):
+                return None
+            
+            # Download patch metadata manifest
+            patch_link = patch_info.get('link')
+            if not patch_link:
+                return None
+            
+            patch_data = api_client.get_patch_manifest(patch_link)
+            if not patch_data:
+                return None
+            
+            # Verify patch algorithm is supported
+            if patch_data.get('algorithm') != 'xdelta3':
+                print(f"Unsupported patch algorithm: {patch_data.get('algorithm')}")
+                return None
+            
+            # Get depots we need based on product IDs and language
+            all_product_ids = [manifest.base_product_id] + dlc_product_ids
+            depots_to_fetch = []
+            
+            for depot in patch_data.get('depots', []):
+                depot_product_id = depot.get('productId')
+                depot_languages = depot.get('languages', [])
+                
+                # Check if this depot matches our product IDs and language
+                if depot_product_id in all_product_ids:
+                    if language in depot_languages:
+                        depots_to_fetch.append(depot)
+            
+            if not depots_to_fetch:
+                return None
+            
+            # Download and parse patch manifests for each depot
+            files = []
+            for depot in depots_to_fetch:
+                depot_manifest = depot.get('manifest')
+                if not depot_manifest:
+                    continue
+                
+                # Download depot patch manifest
+                depot_diffs = api_client.get_patch_depot_manifest(depot_manifest)
+                if not depot_diffs:
+                    print(f"Failed to get patch depot manifest for {depot_manifest}")
+                    return None
+                
+                # Parse DepotDiff items
+                for diff in depot_diffs.get('depot', {}).get('items', []):
+                    if diff.get('type') == 'DepotDiff':
+                        files.append(FilePatchDiff.from_json(diff))
+                    else:
+                        print(f'Unknown type in patcher: {diff.get("type")}')
+                        return None
+            
+            # Create patch object
+            patch = cls(
+                patch_data=patch_data,
+                files=files,
+                algorithm=patch_data.get('algorithm', 'xdelta3'),
+                from_build_id=from_build,
+                to_build_id=to_build
+            )
+            
+            return patch
+            
+        except Exception as e:
+            print(f"Failed to get patch: {e}")
+            return None
+
+
+@dataclass
 class Manifest:
     """
     Represents a Galaxy manifest containing depot information.
@@ -357,4 +522,112 @@ class Manifest:
     def to_json(self) -> str:
         """Serialize manifest to JSON string."""
         return json.dumps(self.raw_data, indent=2)
+
+    @classmethod
+    def compare(cls, new_manifest: "Manifest", old_manifest: Optional["Manifest"] = None,
+                patch: Optional[Patch] = None) -> "ManifestDiff":
+        """
+        Compare two manifests to determine what has changed.
+        
+        This creates a diff showing which files are new, changed, or deleted.
+        If a patch is available, it will be used for changed files instead of
+        downloading full files.
+        
+        Args:
+            new_manifest: Target manifest (what we want)
+            old_manifest: Source manifest (what we have), None for fresh install
+            patch: Optional patch object for incremental updates
+            
+        Returns:
+            ManifestDiff showing changes needed
+            
+        Example:
+            >>> # Fresh install
+            >>> diff = Manifest.compare(manifest)
+            >>> 
+            >>> # Update with patch
+            >>> patch = Patch.get(api, new_manifest, old_manifest, "en", dlc_ids)
+            >>> diff = Manifest.compare(new_manifest, old_manifest, patch)
+        """
+        from galaxy_dl.diff import ManifestDiff
+        
+        diff = ManifestDiff()
+        
+        # Fresh install - all files are new
+        if not old_manifest:
+            diff.new = new_manifest.items
+            return diff
+        
+        # Build lookup dicts
+        new_files = {item.path.lower(): item for item in new_manifest.items}
+        old_files = {item.path.lower(): item for item in old_manifest.items}
+        
+        # Find deleted files
+        for old_path, old_item in old_files.items():
+            if old_path not in new_files:
+                diff.deleted.append(old_item)
+        
+        # Find new and changed files
+        for new_path, new_item in new_files.items():
+            old_item = old_files.get(new_path)
+            
+            if not old_item:
+                # New file
+                diff.new.append(new_item)
+            else:
+                # File exists in both - check if changed
+                # For V1->V2 upgrades, always re-download
+                if old_manifest.generation != new_manifest.generation:
+                    diff.changed.append(new_item)
+                    continue
+                
+                # Check if we have a patch for this file
+                patch_file = None
+                if patch:
+                    for pf in patch.files:
+                        # Match by md5_source (old file hash)
+                        old_hash = old_item.md5 or (old_item.chunks[0]["md5_uncompressed"] if old_item.chunks else None)
+                        if pf.md5_source == old_hash:
+                            patch_file = pf
+                            patch_file.old_file = old_item
+                            patch_file.new_file = new_item
+                            break
+                
+                if patch_file:
+                    # Use patch instead of full download
+                    diff.patched.append(patch_file)
+                else:
+                    # Check if file content changed
+                    if cls._file_changed(new_item, old_item):
+                        diff.changed.append(new_item)
+        
+        return diff
+
+    @staticmethod
+    def _file_changed(new_item: DepotItem, old_item: DepotItem) -> bool:
+        """Check if a file has changed between manifests."""
+        # Compare by MD5 if available
+        if new_item.md5 and old_item.md5:
+            return new_item.md5 != old_item.md5
+        
+        # Compare by SHA256 if available
+        if new_item.sha256 and old_item.sha256:
+            return new_item.sha256 != old_item.sha256
+        
+        # For single-chunk files, compare chunk MD5
+        if len(new_item.chunks) == 1 and len(old_item.chunks) == 1:
+            return new_item.chunks[0].md5_uncompressed != old_item.chunks[0].md5_uncompressed
+        
+        # For multi-chunk files, compare chunk count and individual chunks
+        if len(new_item.chunks) != len(old_item.chunks):
+            return True
+        
+        for new_chunk, old_chunk in zip(new_item.chunks, old_item.chunks):
+            if new_chunk.md5_uncompressed != old_chunk.md5_uncompressed:
+                return True
+        
+        return False
+
+
+
 

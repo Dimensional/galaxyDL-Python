@@ -13,7 +13,10 @@ This library focuses exclusively on downloading from the Galaxy content delivery
 - ✅ **Flexible Build Selection** - Direct access, build browsing, or delisted build support
 - ✅ **Generation Auto-Detection** - Automatically detect and handle V1 or V2 manifests
 - ✅ **Handle compressed chunks** with zlib decompression  
-- ✅ **Support for dependencies and patches**
+- ✅ **Patch Support** - Download patch files (.delta) for incremental updates
+  - Detects patch availability between builds
+  - Downloads xdelta3 patch chunks
+  - Patch *application* is separate (optional pyxdelta extra or external tools)
 - ✅ **Dependency Management** - Separate system for downloading game dependencies (MSVC, DirectX, .NET, etc.)
 - ✅ **Small files container support**
 - ✅ **Secure link generation and CDN URL management**
