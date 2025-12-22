@@ -1,0 +1,8 @@
+# Development dependencies for galaxy-dl
+# Install with: pip install -r requirements-gui.txt
+
+# core dependencies
+-r requirements.txt
+
+# GUI dependencies
+pyside6==6.10.1
