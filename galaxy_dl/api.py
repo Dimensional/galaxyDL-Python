@@ -1268,7 +1268,12 @@ class GalaxyAPI:
         self.logger.info(f"Getting game details for {game_id}")
         
         try:
-            return self._get_response_json(url)
+            result = self._get_response_json(url)
+            # Games without available details return [] instead of game details object
+            if isinstance(result, list):
+                self.logger.warning(f"Game {game_id} details not available (API returned empty list)")
+                return None  # Return None to distinguish from error
+            return result
         except Exception as e:
             self.logger.error(f"Failed to get game details: {e}")
             return {}
@@ -1308,6 +1313,139 @@ class GalaxyAPI:
         self.logger.info(f"Retrieved details for {len(games_with_details)} games")
         return games_with_details
 
-        self.logger.info(f"Retrieved details for {len(games_with_details)} games")
-        return games_with_details
+    def get_filtered_products(self, media_type: int = 1, page: int = 1, 
+                             search: str = None, system: str = None) -> Dict[str, Any]:
+        """
+        Get filtered products from user's library using the getFilteredProducts API.
+        
+        This endpoint provides more comprehensive product information than get_owned_games,
+        including platform availability, ratings, updates, and more. It supports pagination
+        with 100 products per page.
+        
+        Args:
+            media_type: 1 for games, 2 for movies (default: 1)
+            page: Page number (1-based, default: 1)
+            search: Optional search string to filter products
+            system: Optional platform filter (e.g., "Windows", "Mac", "Linux", "all")
+            
+        Returns:
+            Dictionary containing:
+            - totalProducts: Total number of products matching the criteria
+            - totalPages: Total number of pages
+            - page: Current page number
+            - productsPerPage: Number of products per page (usually 100)
+            - products: List of product dictionaries with detailed information
+            - tags: User-defined tags
+            - updatedProductsCount: Number of products with updates
+            
+        Example:
+            >>> # Get first page of games
+            >>> response = api.get_filtered_products(media_type=1, page=1)
+            >>> print(f"Total games: {response['totalProducts']}")
+            >>> 
+            >>> # Get all games across all pages
+            >>> all_games = []
+            >>> for page in range(1, response['totalPages'] + 1):
+            ...     result = api.get_filtered_products(media_type=1, page=page)
+            ...     all_games.extend(result['products'])
+            >>> 
+            >>> # Search for specific game
+            >>> response = api.get_filtered_products(search="Witcher")
+            >>> for game in response['products']:
+            ...     print(game['title'])
+            
+        Note:
+            The product count may differ from get_owned_games() because:
+            - getFilteredProducts may exclude certain delisted or hidden products
+            - System filter affects the count
+            - Some products might be grouped or counted differently
+        """
+        url = f"{constants.GOG_EMBED}/account/getFilteredProducts"
+        params = {
+            "mediaType": media_type,
+            "page": page
+        }
+        
+        if search:
+            params["search"] = search
+        
+        if system:
+            params["system"] = system
+        
+        self.logger.info(f"Getting filtered products (page {page}, mediaType={media_type})")
+        
+        try:
+            # Use requests directly to pass query parameters
+            self._update_auth_header()
+            response = self.session.get(url, params=params, timeout=constants.DEFAULT_TIMEOUT)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            self.logger.error(f"Failed to get filtered products: {e}")
+            return {
+                "totalProducts": 0,
+                "totalPages": 0,
+                "page": page,
+                "productsPerPage": 100,
+                "products": []
+            }
+
+    def get_all_filtered_products(self, media_type: int = 1, search: str = None, 
+                                  system: str = None) -> List[Dict[str, Any]]:
+        """
+        Get ALL filtered products across all pages.
+        
+        This is a convenience method that automatically handles pagination
+        to retrieve all products from the user's library.
+        
+        Args:
+            media_type: 1 for games, 2 for movies (default: 1)
+            search: Optional search string to filter products
+            system: Optional platform filter (e.g., "Windows", "Mac", "Linux", "all")
+            
+        Returns:
+            List of all product dictionaries
+            
+        Example:
+            >>> # Get all games
+            >>> all_games = api.get_all_filtered_products(media_type=1)
+            >>> print(f"You own {len(all_games)} games")
+            >>> 
+            >>> # Get all Windows games
+            >>> windows_games = api.get_all_filtered_products(media_type=1, system="Windows")
+            >>> 
+            >>> # Search across all pages
+            >>> witcher_games = api.get_all_filtered_products(search="Witcher")
+        """
+        all_products = []
+        page = 1
+        
+        while True:
+            response = self.get_filtered_products(
+                media_type=media_type,
+                page=page,
+                search=search,
+                system=system
+            )
+            
+            products = response.get("products", [])
+            total_pages = response.get("totalPages", 1)
+            
+            if page == 1:
+                total_products = response.get("totalProducts", 0)
+                self.logger.info(
+                    f"Found {total_products} products across {total_pages} page(s)"
+                )
+            
+            all_products.extend(products)
+            
+            # Check if we've reached the last page
+            if page >= total_pages or not products:
+                break
+            
+            page += 1
+        
+        self.logger.info(f"Retrieved {len(all_products)} total products")
+        return all_products
+
 
