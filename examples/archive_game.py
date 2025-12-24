@@ -167,27 +167,32 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         with open(debug_manifest_path, 'w') as f:
             json.dump(manifest_json, f, indent=2)
         
-        # Collect chunks from depot items
-        for item in manifest_json['depot']['items']:
-            if item['type'] == 'DepotFile':
-                # Skip chunks from items with sfcRef - they're in the smallFilesContainer
-                if 'sfcRef' not in item:
-                    for chunk in item.get('chunks', []):
-                        if chunk['compressedMd5'] not in all_chunks:
-                            all_chunks[chunk['compressedMd5']] = {
-                                'chunk': chunk,
-                                'product_id': depot_product_id
-                            }
-        
-        # Collect chunks from smallFilesContainer (if present)
+        # Collect chunks from smallFilesContainer first (if present)
+        # These are the primary source for small files
         if 'smallFilesContainer' in manifest_json['depot']:
             sfc = manifest_json['depot']['smallFilesContainer']
             for chunk in sfc.get('chunks', []):
                 if chunk['compressedMd5'] not in all_chunks:
                     all_chunks[chunk['compressedMd5']] = {
                         'chunk': chunk,
-                        'product_id': depot_product_id  # SFC uses depot's product ID
+                        'product_id': depot_product_id,  # SFC uses depot's product ID
+                        'is_sfc': True
                     }
+        
+        # Collect chunks from depot items
+        # For items with sfcRef, we collect their chunks opportunistically
+        # (they may or may not exist on CDN - SFC is the guaranteed source)
+        for item in manifest_json['depot']['items']:
+            if item['type'] == 'DepotFile':
+                has_sfc_ref = 'sfcRef' in item
+                for chunk in item.get('chunks', []):
+                    if chunk['compressedMd5'] not in all_chunks:
+                        all_chunks[chunk['compressedMd5']] = {
+                            'chunk': chunk,
+                            'product_id': depot_product_id,
+                            'is_sfc': False,
+                            'has_sfc_fallback': has_sfc_ref  # CDN chunk may not exist; SFC has the file
+                        }
         
         print(f"   ✓ {manifest_path}")
         print(f"   ✓ {debug_manifest_path}")
@@ -198,22 +203,44 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     total_size = sum(c['chunk']['compressedSize'] for c in all_chunks.values())
     print(f"   Total: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
     
-    for i, (md5, chunk_data) in enumerate(all_chunks.items(), 1):
+    # Download SFC chunks first, then regular chunks, then SFC-fallback chunks last
+    sfc_chunks = [(md5, data) for md5, data in all_chunks.items() if data.get('is_sfc', False)]
+    regular_chunks = [(md5, data) for md5, data in all_chunks.items() if not data.get('is_sfc', False) and not data.get('has_sfc_fallback', False)]
+    sfc_fallback_chunks = [(md5, data) for md5, data in all_chunks.items() if data.get('has_sfc_fallback', False)]
+    
+    print(f"   SFC chunks: {len(sfc_chunks)}, Regular chunks: {len(regular_chunks)}, SFC-fallback chunks: {len(sfc_fallback_chunks)}")
+    
+    downloaded = 0
+    skipped = 0
+    failed = 0
+    
+    for i, (md5, chunk_data) in enumerate(sfc_chunks + regular_chunks + sfc_fallback_chunks, 1):
         chunk_info = chunk_data['chunk']
         product_id = chunk_data['product_id']
+        has_sfc_fallback = chunk_data.get('has_sfc_fallback', False)
+        chunk_type = "SFC" if chunk_data.get('is_sfc') else ("SFC-fallback" if has_sfc_fallback else "Regular")
         
         chunk_dir = os.path.join(base_dir, "store", md5[:2], md5[2:4])
         os.makedirs(chunk_dir, exist_ok=True)
         chunk_path = os.path.join(chunk_dir, md5)
         
         if os.path.exists(chunk_path):
-            print(f"   [{i}/{len(all_chunks)}] Exists: {md5}")
+            print(f"   [{i}/{len(all_chunks)}] Exists: {md5} ({chunk_type})")
+            skipped += 1
         else:
             try:
                 downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
-                print(f"   [{i}/{len(all_chunks)}] Downloaded: {chunk_path}")
+                print(f"   [{i}/{len(all_chunks)}] Downloaded: {chunk_path} ({chunk_type})")
+                downloaded += 1
             except Exception as e:
-                print(f"   [{i}/{len(all_chunks)}] Skipped: {md5} (product {product_id} - {e})")
+                if has_sfc_fallback:
+                    print(f"   [{i}/{len(all_chunks)}] Not on CDN: {md5} (file content available in SFC)")
+                    skipped += 1
+                else:
+                    print(f"   [{i}/{len(all_chunks)}] FAILED: {md5} (product {product_id} - {e})")
+                    failed += 1
+    
+    print(f"\n✓ Downloaded: {downloaded}, Skipped: {skipped}, Failed: {failed}")
     
     print(f"\n✓ Complete: {base_dir}")
 

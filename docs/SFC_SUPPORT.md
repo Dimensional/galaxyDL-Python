@@ -50,14 +50,19 @@ Galaxy V2 manifests use **Small Files Containers (SFC)** to efficiently store sm
 1. **Items with `sfcRef`**: These files are stored in the SFC
    - `offset`: Byte offset within the decompressed SFC data
    - `size`: Size of the file within the SFC
-   - `chunks`: Describes what the extracted file looks like (MD5, size) - **NOT downloadable chunks!**
+   - `chunks`: Describes what the extracted file looks like (MD5, size)
 
 2. **smallFilesContainer**: The actual container to download
-   - Has its own `chunks` array - these ARE downloadable
+   - Has its own `chunks` array - these ARE always downloadable
    - Must be downloaded and decompressed first
    - Contains multiple small files packed together
 
-3. **Phantom Chunks**: The chunks in items with `sfcRef` do NOT exist as downloadable files on the CDN. They describe the extracted file's properties, but you cannot download them individually.
+3. **Individual Chunks May or May Not Exist**: 
+   - Items with `sfcRef` have a `chunks` array describing the extracted file
+   - These chunks **MAY** exist on the CDN (older builds) or **MAY NOT** (newer builds)
+   - The SFC is the guaranteed source - individual chunks are opportunistic
+   - **Archival strategy**: Download SFC first, then try individual chunks (they might exist for redundancy)
+   - **Installation strategy**: Extract from SFC (always works) or download individual chunks if they exist
 
 ## Implementation
 
