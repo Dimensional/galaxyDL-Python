@@ -153,7 +153,7 @@ class DependencyManager:
         self.base_path = Path(base_path)
         self.repository = DependencyRepository(api)
         
-        # Track installed dependencies
+        # Track installed dependencies (simple set for backward compatibility)
         self.installed_manifest_path = self.base_path / "installed.json"
         self.installed: Set[str] = set()
         
@@ -177,8 +177,9 @@ class DependencyManager:
         if not self.repository.load():
             return False
         
-        # Save repository metadata for archival
-        repo_path = self.base_path / "repository.json"
+        # Save repository metadata for archival (with build_id in filename)
+        build_id = self.repository.repository.get('build_id', 'unknown')
+        repo_path = self.base_path / f"repository_{build_id}.json"
         with open(repo_path, 'w') as f:
             json.dump(self.repository.repository, f, indent=2)
         
@@ -489,7 +490,7 @@ class DependencyManager:
         Args:
             dependency_ids: List of dependency IDs
         """
-        deps = self.get_dependencies_for_game(dependency_ids, include_redist=False)
+        deps = self.get_dependencies_for_game(dependency_ids, include_redist=True)
         
         print(f"\nFound {len(deps)} dependencies:")
         print("=" * 80)

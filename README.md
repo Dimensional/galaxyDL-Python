@@ -117,20 +117,40 @@ galaxy-dl info 1207658930 --platform osx
 # Initialize dependency system (downloads repository)
 manage_dependencies.py init
 
+# Update dependency repository from GOG (fetch latest version)
+manage_dependencies.py update
+
 # List all available dependencies
 manage_dependencies.py list-all
 
+# Download all dependencies (66 total) without specifying a game
+manage_dependencies.py download-all
+
+# Download a specific dependency by name
+manage_dependencies.py download MSVC2010_x64
+manage_dependencies.py download DirectX
+manage_dependencies.py download dotNet4
+
 # List dependencies for a specific game
-manage_dependencies.py list-game path/to/depot.json
+# For V2 games: use the *_depot.json file
+manage_dependencies.py list-game "The Witcher 2/v2/debug/e518c17d90805e8e3998a35fac8b8505_depot.json"
+
+# For V1 games: use the repository.json file
+manage_dependencies.py list-game "The Witcher 2/v1/manifests/1207658930/windows/37794096/repository.json"
 
 # Download dependencies for a game
-manage_dependencies.py download-game path/to/depot.json
+# For V2 games:
+manage_dependencies.py download-game "path/to/game_depot.json"
 
-# Include redistributables (MSVC, DirectX, .NET)
-manage_dependencies.py download-game path/to/depot.json --include-redist
+# For V1 games:
+manage_dependencies.py download-game "path/to/repository.json"
 
 # Use custom storage location
 manage_dependencies.py init --path ./my-dependencies
+
+# Force ASCII output (disable Unicode symbols)
+manage_dependencies.py --ascii list-all
+manage_dependencies.py --ascii update
 ```
 
 ### Full-Featured Examples
@@ -353,13 +373,41 @@ GOG Galaxy uses a separate dependency system for runtime redistributables (MSVC,
 **Storage Structure:**
 ```
 dependencies/
-├── repository.json                   # 66 available dependencies metadata
-├── installed.json                    # Tracks installed dependencies
-├── debug/{hash}_manifest.json        # Human-readable manifests
+├── repository_59253357321197500.json  # Dependency repository (with build ID)
+├── installed.json                      # Tracks installed dependencies
+├── build_tracking.json                 # Tracks which builds use which dependency versions
+├── debug/{hash}_manifest.json          # Human-readable manifests
 └── v2/
-    ├── meta/XX/YY/{hash}            # Compressed manifests (CDN format)
-    └── store/XX/YY/{hash}           # Dependency chunks
+    ├── meta/XX/YY/{hash}              # Compressed manifests (CDN format)
+    └── store/XX/YY/{hash}             # Dependency chunks
 ```
+
+**Note:** The repository filename includes the build ID (e.g., `repository_59253357321197500.json`). When you run `update`, it will fetch the latest repository and save it with its new build ID if changed.
+
+**Build Tracking Format:**
+The `build_tracking.json` file tracks which game builds use which versions of each dependency:
+```json
+{
+  "MSVC2010": [
+    {
+      "checksum": "abc123...",
+      "builds": ["56452082907692588", "57325296727241979"]
+    }
+  ],
+  "DirectX": [
+    {
+      "checksum": "def456...",
+      "builds": ["56452082907692588"]
+    },
+    {
+      "checksum": "789ghi...",
+      "builds": ["60123456789012345"]
+    }
+  ]
+}
+```
+
+This allows tracking when different game builds use different versions of the same dependency.
 
 ### Using the Dependency Manager
 
@@ -377,13 +425,31 @@ manager.initialize()  # Downloads repository with 66 dependencies
 
 **List Dependencies for a Game:**
 ```python
-# Get dependency IDs from depot manifest
-dependency_ids = depot.get("dependencies", [])
+# Load depot/repository file (handles both V1 and V2)
+import json
+from pathlib import Path
 
-# Filter and list
+file_path = Path("path/to/file.json")  # V1: repository.json, V2: *_depot.json
+with open(file_path, 'r') as f:
+    data = json.load(f)
+
+# Extract dependency IDs based on version
+version = data.get("version")
+dependency_ids = []
+
+if version == 1:
+    # V1: Extract from redist objects in product.depots
+    product = data.get("product", {})
+    depots = product.get("depots", [])
+    dependency_ids = [depot["redist"] for depot in depots if "redist" in depot]
+elif version == 2:
+    # V2: Extract from dependencies array
+    dependency_ids = data.get("dependencies", [])
+
+# Get all dependencies (always include everything)
 dependencies = manager.get_dependencies_for_game(
     dependency_ids,
-    include_redist=True  # Include MSVC, DirectX, .NET installers
+    include_redist=True  # Always True to get all dependencies
 )
 
 for dep in dependencies:
