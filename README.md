@@ -769,7 +769,6 @@ Tokens typically valid for ~1 hour. Archive script completes before expiration f
 See the [`examples/`](examples/) directory for practical examples:
 - **`list_library.py`** - List your owned games with details
 - **`download_game.py`** - Complete download workflow
-- **`download_with_sfc.py`** - **NEW**: Demonstrates SFC extraction for installation
 - **`build_selection.py`** - Interactive build selector
 - **`delisted_builds.py`** - Access delisted builds using gogdb.org data
 - **`archive_game.py`** - Downloads v1/v2 manifests and files (archival mode with SFC support)
@@ -782,6 +781,7 @@ See the [`examples/`](examples/) directory for practical examples:
 ```
 galaxy_dl/
 ├── __init__.py          # Package initialization
+├── cli.py               # Command-line interface
 ├── api.py               # Galaxy API client
 ├── auth.py              # Authentication manager
 ├── constants.py         # API endpoints and constants
