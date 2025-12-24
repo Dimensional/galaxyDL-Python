@@ -275,6 +275,71 @@ for item in items:
     print(f"Downloaded: {path}")
 ```
 
+### 6. Small Files Container (SFC) Support
+
+**What are SFCs?**  
+Galaxy V2 uses Small Files Containers to pack multiple small files (licenses, metadata, docs) into single compressed chunks for efficiency. Items stored in SFCs have phantom chunks in their manifest that don't exist on the CDN - the real data is in the SFC chunks.
+
+**Automatic Handling:**
+
+```python
+from galaxy_dl import GalaxyAPI, GalaxyDownloader
+
+api = GalaxyAPI(auth)
+downloader = GalaxyDownloader(api)
+
+# Get depot items (includes both regular items and SFC items)
+depot_items = api.get_depot_items("1744110647", "windows")
+
+# Option 1: Download complete depot with automatic SFC extraction
+downloader.download_depot_items(
+    depot_items,
+    output_dir="./game",
+    extract_sfc=True,        # Extract files from SFC (installation mode)
+    delete_sfc_after=True    # Clean up SFC chunks after extraction
+)
+
+# Option 2: Archive mode - keep raw SFC chunks without extraction
+downloader.download_depot_items(
+    depot_items,
+    output_dir="./archive",
+    extract_sfc=False        # Preserve SFC chunks as-is (archival mode)
+)
+```
+
+**Manual Control:**
+
+```python
+# Get SFC-specific info
+sfc_items = [item for item in depot_items if item.is_small_files_container]
+items_in_sfc = [item for item in depot_items if item.is_in_sfc]
+
+print(f"Found {len(sfc_items)} SFC chunks")
+print(f"Found {len(items_in_sfc)} files packed in SFCs")
+
+# Download SFC chunk first
+sfc_chunk = sfc_items[0]
+sfc_path = downloader.download_item(sfc_chunk, "./temp")
+
+# Read SFC data
+sfc_data = zlib.decompress(open(sfc_path, 'rb').read())
+
+# Extract individual file from SFC
+for item in items_in_sfc:
+    if item.is_in_sfc:
+        path = downloader.download_item(
+            item,
+            output_dir="./game",
+            sfc_data=sfc_data  # Pass decompressed SFC data
+        )
+```
+
+**Key Points:**
+- **Phantom Chunks**: Items with `sfcRef` have non-existent chunks in their manifest
+- **DLC Authentication**: DLC SFCs require the DLC's product_id for authentication
+- **Archival vs Installation**: Archive mode preserves raw SFC chunks, installation mode extracts files
+- See [docs/SFC_SUPPORT.md](docs/SFC_SUPPORT.md) for implementation details
+
 ## Architecture
 
 The library is organized into focused modules:
@@ -324,6 +389,7 @@ The `GalaxyDownloader` handles both transparently. See [GENERATION_DETECTION.md]
 **`GalaxyDownloader`** - Unified downloader
 - `download_item(item, output_dir, ...)` - Download single file (auto-detects V1/V2)
 - `download_items_parallel(items, output_dir, ...)` - Download multiple files in parallel
+- `download_depot_items(depot_items, output_dir, ...)` - **NEW**: Download complete depot with automatic SFC extraction
 
 **`AuthManager`** - OAuth authentication
 - `login_with_code(code)` - Login with OAuth code
@@ -703,9 +769,10 @@ Tokens typically valid for ~1 hour. Archive script completes before expiration f
 See the [`examples/`](examples/) directory for practical examples:
 - **`list_library.py`** - List your owned games with details
 - **`download_game.py`** - Complete download workflow
+- **`download_with_sfc.py`** - **NEW**: Demonstrates SFC extraction for installation
 - **`build_selection.py`** - Interactive build selector
 - **`delisted_builds.py`** - Access delisted builds using gogdb.org data
-- **`archive_game.py`** - Downloads v1/v2 manifests and files
+- **`archive_game.py`** - Downloads v1/v2 manifests and files (archival mode with SFC support)
 - **`manage_dependencies.py`** - Dependency manager (init, list, download)
 
 ## Development

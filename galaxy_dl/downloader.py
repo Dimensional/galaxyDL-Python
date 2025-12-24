@@ -81,7 +81,8 @@ class GalaxyDownloader:
                      cdn_urls: Optional[List[str]] = None,
                      verify_hash: bool = True,
                      progress_callback: Optional[Callable[[int, int], None]] = None,
-                     raw_mode: bool = False) -> str:
+                     raw_mode: bool = False,
+                     sfc_data: Optional[bytes] = None) -> str:
         """
         Download a depot item (auto-detects V1 vs V2).
         
@@ -90,6 +91,7 @@ class GalaxyDownloader:
         - If item is just the blob: Download whole main.bin
         
         For V2 items:
+        - If item is in SFC: Extract from provided sfc_data
         - If raw_mode=True: Save compressed chunks without decompression
         - If raw_mode=False: Download, decompress, and assemble into final file
         
@@ -100,10 +102,17 @@ class GalaxyDownloader:
             verify_hash: Whether to verify hashes
             progress_callback: Optional callback(bytes_downloaded, total_bytes)
             raw_mode: For V2 only - save raw compressed chunks without assembly
+            sfc_data: Decompressed small files container data (for items in SFC)
             
         Returns:
             Path to the downloaded file (or chunks directory for V2 raw mode)
         """
+        # Handle items that are inside a small files container
+        if item.is_in_sfc:
+            if sfc_data is None:
+                raise DownloadError(f"Item {item.path} is in SFC but no SFC data provided")
+            return self._extract_from_sfc(item, output_dir, sfc_data)
+        
         # Detect if this is V1 blob or V2 chunk-based
         if item.is_v1_blob:
             # Check if this is a file extraction or whole blob download
@@ -757,6 +766,139 @@ class GalaxyDownloader:
         
         # Download the chunk
         self.api.download_raw(url, output_path)
+    
+    def _extract_from_sfc(self, item: DepotItem, output_dir: str, sfc_data: bytes) -> str:
+        """
+        Extract a file from small files container data.
+        
+        Args:
+            item: DepotItem with is_in_sfc=True
+            output_dir: Directory to save extracted file
+            sfc_data: Decompressed small files container data
+            
+        Returns:
+            Path to extracted file
+        """
+        utils.ensure_directory(output_dir)
+        output_path = os.path.join(output_dir, item.path)
+        parent_dir = os.path.dirname(output_path)
+        if parent_dir:
+            utils.ensure_directory(parent_dir)
+        
+        self.logger.info(f"Extracting {item.path} from SFC (offset={item.sfc_offset}, size={item.sfc_size})")
+        
+        # Validate offset and size
+        if item.sfc_offset + item.sfc_size > len(sfc_data):
+            raise DownloadError(
+                f"SFC extraction out of bounds: offset={item.sfc_offset}, "
+                f"size={item.sfc_size}, sfc_len={len(sfc_data)}"
+            )
+        
+        # Extract file data from SFC
+        file_data = sfc_data[item.sfc_offset:item.sfc_offset + item.sfc_size]
+        
+        # Write to file
+        with open(output_path, 'wb') as f:
+            f.write(file_data)
+        
+        self.logger.info(f"Successfully extracted {item.path} ({item.sfc_size} bytes)")
+        return output_path
+    
+    def download_depot_items(self, items: List[DepotItem], output_dir: str,
+                            cdn_urls: Optional[List[str]] = None,
+                            verify_hash: bool = True,
+                            progress_callback: Optional[Callable[[str, int, int], None]] = None,
+                            delete_sfc_after_extraction: bool = True) -> Dict[str, str]:
+        """
+        Download all items from a depot, handling small files containers automatically.
+        
+        This method:
+        1. Downloads and decompresses SFC items first
+        2. Extracts files that reference the SFC
+        3. Downloads regular items
+        4. Optionally deletes SFC files after extraction
+        
+        Args:
+            items: List of DepotItem objects
+            output_dir: Directory to save files
+            cdn_urls: CDN URLs (will fetch if not provided)
+            verify_hash: Whether to verify hashes
+            progress_callback: Optional callback(item_path, bytes_downloaded, total_bytes)
+            delete_sfc_after_extraction: Whether to delete SFC files after extracting items
+            
+        Returns:
+            Dictionary mapping item paths to downloaded file paths
+        """
+        results = {}
+        sfc_containers = {}  # {product_id: (item, decompressed_data)}
+        sfc_items = []  # Items to extract from SFC
+        regular_items = []  # Regular items to download
+        
+        # Categorize items
+        for item in items:
+            if item.is_small_files_container:
+                sfc_containers[item.product_id] = (item, None)
+            elif item.is_in_sfc:
+                sfc_items.append(item)
+            else:
+                regular_items.append(item)
+        
+        # Download and decompress SFC containers
+        for product_id, (sfc_item, _) in sfc_containers.items():
+            self.logger.info(f"Downloading small files container for product {product_id}")
+            
+            # Download SFC
+            sfc_path = self.download_item(
+                sfc_item, output_dir, cdn_urls, verify_hash,
+                lambda downloaded, total: progress_callback(sfc_item.path, downloaded, total) if progress_callback else None
+            )
+            results[sfc_item.path] = sfc_path
+            
+            # Read and decompress SFC data
+            with open(sfc_path, 'rb') as f:
+                sfc_data = f.read()
+            
+            sfc_containers[product_id] = (sfc_item, sfc_data)
+            self.logger.info(f"Loaded SFC for product {product_id} ({len(sfc_data)} bytes)")
+        
+        # Extract files from SFC
+        for item in sfc_items:
+            sfc_item, sfc_data = sfc_containers.get(item.product_id, (None, None))
+            if sfc_data is None:
+                self.logger.warning(f"Skipping {item.path} - no SFC data for product {item.product_id}")
+                continue
+            
+            try:
+                output_path = self._extract_from_sfc(item, output_dir, sfc_data)
+                results[item.path] = output_path
+                self.logger.info(f"Extracted: {item.path}")
+            except Exception as e:
+                self.logger.error(f"Failed to extract {item.path}: {e}")
+                results[item.path] = None
+        
+        # Delete SFC files if requested
+        if delete_sfc_after_extraction:
+            for sfc_item, _ in sfc_containers.values():
+                sfc_path = results.get(sfc_item.path)
+                if sfc_path and os.path.exists(sfc_path):
+                    os.remove(sfc_path)
+                    self.logger.info(f"Deleted SFC: {sfc_path}")
+                    del results[sfc_item.path]
+        
+        # Download regular items
+        for item in regular_items:
+            try:
+                output_path = self.download_item(
+                    item, output_dir, cdn_urls, verify_hash,
+                    lambda downloaded, total: progress_callback(item.path, downloaded, total) if progress_callback else None
+                )
+                results[item.path] = output_path
+                self.logger.info(f"Downloaded: {item.path}")
+            except Exception as e:
+                self.logger.error(f"Failed to download {item.path}: {e}")
+                results[item.path] = None
+        
+        return results
     
     def download_main_bin(self, game_id: str, platform: str, timestamp: str, output_path: str,
                           num_workers: int = 4) -> None:

@@ -148,9 +148,11 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     # 2. Download all manifests: v2/meta/79/a1/79a1f5fd...
     print(f"\n[2/3] Downloading {len(depot_json['depots'])} manifest(s)...")
     
-    all_chunks = {}
+    all_chunks = {}  # {md5: {'chunk': chunk_info, 'product_id': product_id}}
     for depot in depot_json['depots']:
         manifest_id = depot['manifest']
+        depot_product_id = depot.get('productId', game_id)  # Get depot's product ID
+        
         manifest_dir = os.path.join(base_dir, "meta", manifest_id[:2], manifest_id[2:4])
         os.makedirs(manifest_dir, exist_ok=True)
         manifest_path = os.path.join(manifest_dir, manifest_id)
@@ -165,11 +167,27 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         with open(debug_manifest_path, 'w') as f:
             json.dump(manifest_json, f, indent=2)
         
-        # Collect chunks
+        # Collect chunks from depot items
         for item in manifest_json['depot']['items']:
             if item['type'] == 'DepotFile':
-                for chunk in item.get('chunks', []):
-                    all_chunks[chunk['compressedMd5']] = chunk
+                # Skip chunks from items with sfcRef - they're in the smallFilesContainer
+                if 'sfcRef' not in item:
+                    for chunk in item.get('chunks', []):
+                        if chunk['compressedMd5'] not in all_chunks:
+                            all_chunks[chunk['compressedMd5']] = {
+                                'chunk': chunk,
+                                'product_id': depot_product_id
+                            }
+        
+        # Collect chunks from smallFilesContainer (if present)
+        if 'smallFilesContainer' in manifest_json['depot']:
+            sfc = manifest_json['depot']['smallFilesContainer']
+            for chunk in sfc.get('chunks', []):
+                if chunk['compressedMd5'] not in all_chunks:
+                    all_chunks[chunk['compressedMd5']] = {
+                        'chunk': chunk,
+                        'product_id': depot_product_id  # SFC uses depot's product ID
+                    }
         
         print(f"   ✓ {manifest_path}")
         print(f"   ✓ {debug_manifest_path}")
@@ -177,10 +195,13 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     # 3. Download all chunks: v2/store/2e/0d/2e0dc2f5...
     print(f"\n[3/3] Downloading {len(all_chunks)} unique chunks...")
     
-    total_size = sum(c['compressedSize'] for c in all_chunks.values())
+    total_size = sum(c['chunk']['compressedSize'] for c in all_chunks.values())
     print(f"   Total: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
     
-    for i, (md5, chunk_info) in enumerate(all_chunks.items(), 1):
+    for i, (md5, chunk_data) in enumerate(all_chunks.items(), 1):
+        chunk_info = chunk_data['chunk']
+        product_id = chunk_data['product_id']
+        
         chunk_dir = os.path.join(base_dir, "store", md5[:2], md5[2:4])
         os.makedirs(chunk_dir, exist_ok=True)
         chunk_path = os.path.join(chunk_dir, md5)
@@ -188,8 +209,11 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         if os.path.exists(chunk_path):
             print(f"   [{i}/{len(all_chunks)}] Exists: {md5}")
         else:
-            downloader.download_raw_chunk(md5, chunk_path, product_id=game_id)
-            print(f"   [{i}/{len(all_chunks)}] Downloaded: {chunk_path}")
+            try:
+                downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
+                print(f"   [{i}/{len(all_chunks)}] Downloaded: {chunk_path}")
+            except Exception as e:
+                print(f"   [{i}/{len(all_chunks)}] Skipped: {md5} (product {product_id} - {e})")
     
     print(f"\n✓ Complete: {base_dir}")
 
