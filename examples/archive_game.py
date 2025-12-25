@@ -247,7 +247,7 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     print(f"   SFC chunks: {len(sfc_chunks)}, Regular chunks: {len(regular_chunks)}, SFC-fallback chunks: {len(sfc_fallback_chunks)}")
     
     # Thread-safe counters and lock for progress updates
-    stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'progress': 0}
+    stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'completed': 0}
     stats_lock = Lock()
     
     def download_chunk(chunk_task):
@@ -263,9 +263,6 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         chunk_path = os.path.join(chunk_dir, md5)
         
         result = None
-        with stats_lock:
-            stats['progress'] += 1
-            current = stats['progress']
         
         if os.path.exists(chunk_path):
             result = ('skipped', md5, chunk_type)
@@ -287,39 +284,31 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
                     with stats_lock:
                         stats['failed'] += 1
         
-        return (current, len(all_chunks), result)
+        return result
     
     # Download chunks in parallel
     all_chunk_tasks = sfc_chunks + regular_chunks + sfc_fallback_chunks
+    total_chunks = len(all_chunks)
     
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         futures = [executor.submit(download_chunk, task) for task in all_chunk_tasks]
         
-        # Priority queue for ordered output
-        result_buffer = {}
-        next_to_print = 1
-        
         for future in as_completed(futures):
-            current, total, result = future.result()
+            result = future.result()
             status, identifier, extra = result
             
-            # Buffer this result
-            result_buffer[current] = (status, identifier, extra, total)
+            with stats_lock:
+                stats['completed'] += 1
+                current = stats['completed']
             
-            # Print all consecutive results starting from next_to_print
-            while next_to_print in result_buffer:
-                status, identifier, extra, total = result_buffer.pop(next_to_print)
-                
-                if status == 'downloaded':
-                    print(f"   [{next_to_print}/{total}] Downloaded: {identifier} ({extra})")
-                elif status == 'skipped':
-                    print(f"   [{next_to_print}/{total}] Exists: {identifier} ({extra})")
-                elif status == 'sfc_fallback':
-                    print(f"   [{next_to_print}/{total}] Not on CDN: {identifier} (file content available in SFC)")
-                elif status == 'failed':
-                    print(f"   [{next_to_print}/{total}] FAILED: {identifier} ({extra})")
-                
-                next_to_print += 1
+            if status == 'downloaded':
+                print(f"   [{current}/{total_chunks}] Downloaded: {identifier} ({extra})")
+            elif status == 'skipped':
+                print(f"   [{current}/{total_chunks}] Exists: {identifier} ({extra})")
+            elif status == 'sfc_fallback':
+                print(f"   [{current}/{total_chunks}] Not on CDN: {identifier} (file content available in SFC)")
+            elif status == 'failed':
+                print(f"   [{current}/{total_chunks}] FAILED: {identifier} ({extra})")
     
     print(f"\n✓ Downloaded: {stats['downloaded']}, Skipped: {stats['skipped']}, Failed: {stats['failed']}")
     

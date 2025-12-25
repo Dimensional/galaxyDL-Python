@@ -329,7 +329,7 @@ def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path
                 })
         
         # Thread-safe counters
-        stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'progress': 0}
+        stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'completed': 0}
         stats_lock = Lock()
         
         def download_chunk_task(chunk_info):
@@ -338,10 +338,6 @@ def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path
             chunk_size = chunk_info['size']
             file_path = chunk_info['file_path']
             
-            with stats_lock:
-                stats['progress'] += 1
-                current = stats['progress']
-            
             # Check if already exists
             depot_dir = output_dir / "depot" / "patches" / chunk_md5[:2] / chunk_md5[2:4]
             depot_file = depot_dir / chunk_md5
@@ -349,7 +345,7 @@ def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path
             if depot_file.exists():
                 with stats_lock:
                     stats['skipped'] += 1
-                return ('skipped', current, total_chunks, chunk_md5, file_path, chunk_size)
+                return ('skipped', chunk_md5, file_path, chunk_size)
             
             try:
                 chunk_file = download_patch_chunk(
@@ -364,46 +360,35 @@ def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path
                 
                 with stats_lock:
                     stats['downloaded'] += 1
-                return ('downloaded', current, total_chunks, chunk_md5, file_path, chunk_size)
+                return ('downloaded', chunk_md5, file_path, chunk_size)
                 
             except Exception as e:
                 with stats_lock:
                     stats['failed'] += 1
-                return ('failed', current, total_chunks, chunk_md5, file_path, str(e))
+                return ('failed', chunk_md5, file_path, str(e))
         
         # Download chunks in parallel
         print(f"\n   Downloading with {num_workers} workers...")
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = [executor.submit(download_chunk_task, chunk) for chunk in chunk_tasks]
             
-            # Priority queue for ordered output
-            result_buffer = {}
-            next_to_print = 1
-            
             for future in as_completed(futures):
                 result = future.result()
                 status = result[0]
-                current = result[1]
                 
-                # Buffer this result
-                result_buffer[current] = result
+                with stats_lock:
+                    stats['completed'] += 1
+                    current = stats['completed']
                 
-                # Print all consecutive results starting from next_to_print
-                while next_to_print in result_buffer:
-                    buffered_result = result_buffer.pop(next_to_print)
-                    buffered_status = buffered_result[0]
-                    
-                    if buffered_status == 'downloaded':
-                        _, current, total, md5, path, size = buffered_result
-                        print(f"   [{current}/{total}] ✓ Downloaded: {md5} ({size:,} bytes) - {path}")
-                    elif buffered_status == 'skipped':
-                        _, current, total, md5, path, size = buffered_result
-                        print(f"   [{current}/{total}] = Exists: {md5} ({size:,} bytes) - {path}")
-                    elif buffered_status == 'failed':
-                        _, current, total, md5, path, error = buffered_result
-                        print(f"   [{current}/{total}] ✗ Failed: {md5} - {error}")
-                    
-                    next_to_print += 1
+                if status == 'downloaded':
+                    _, md5, path, size = result
+                    print(f"   [{current}/{total_chunks}] ✓ Downloaded: {md5} ({size:,} bytes) - {path}")
+                elif status == 'skipped':
+                    _, md5, path, size = result
+                    print(f"   [{current}/{total_chunks}] = Exists: {md5} ({size:,} bytes) - {path}")
+                elif status == 'failed':
+                    _, md5, path, error = result
+                    print(f"   [{current}/{total_chunks}] ✗ Failed: {md5} - {error}")
         
         # Update cumulative stats
         all_stats['downloaded'] += stats['downloaded']
