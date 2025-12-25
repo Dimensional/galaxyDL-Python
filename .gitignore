@@ -1,6 +1,7 @@
 # Existing subfolders
 heroic-gogdl/
 lgogdownloader/
+dependencies/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
