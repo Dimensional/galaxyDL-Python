@@ -29,6 +29,8 @@ import sys
 import json
 import zlib
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from galaxy_dl import GalaxyDownloader, constants
 from galaxy_dl.auth import AuthManager
 from galaxy_dl.api import GalaxyAPI
@@ -105,20 +107,17 @@ def get_repository_from_build(api: GalaxyAPI, game_id: str, build_id: str, platf
         return str(repo_id)
 
 
-def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str):
+def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, num_workers: int = 8):
     """Archive V2 build mirroring CDN structure.
     
     Args:
         repository_id: The depot/repository hash (e.g., e518c17d90805e8e3998a35fac8b8505)
-    """
-    """Archive V2 build mirroring CDN structure.
-    
-    Args:
-        repository_id: The depot/repository hash (e.g., e518c17d90805e8e3998a35fac8b8505)
+        num_workers: Number of parallel download threads (default: 8)
     """
     print(f"\n=== Archiving V2 Build ===")
     print(f"Game: {game_name} ({game_id})")
     print(f"Repository: {repository_id}")
+    print(f"Workers: {num_workers}")
     
     # Base: <game_name>/v2/
     base_dir = os.path.join(game_name, "v2")
@@ -137,6 +136,10 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     with open(depot_path, 'rb') as f:
         depot_json = decompress_if_needed(f.read())
     
+    # Extract platform from depot metadata
+    platform = depot_json.get('platform', 'unknown')
+    print(f"   Platform: {platform}")
+    
     # Save human-readable JSON to debug folder
     debug_depot_path = os.path.join(debug_dir, f"{repository_id}_depot.json")
     with open(debug_depot_path, 'w') as f:
@@ -146,9 +149,42 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     print(f"   ✓ {debug_depot_path}")
     
     # 2. Download all manifests: v2/meta/79/a1/79a1f5fd...
-    print(f"\n[2/3] Downloading {len(depot_json['depots'])} manifest(s)...")
+    manifest_count = len(depot_json['depots'])
+    
+    print(f"\n[2/3] Downloading {manifest_count} manifest(s)...")
+    
+    # Note: offlineDepot is intentionally skipped
+    # It contains metadata (e.g., project.json) that is not available via CDN store paths
+    # Neither lgogdownloader nor heroic-gogdl download offlineDepot content
+    if 'offlineDepot' in depot_json:
+        offline_depot = depot_json['offlineDepot']
+        manifest_id = offline_depot['manifest']
+        
+        print(f"   ℹ Skipping offlineDepot manifest {manifest_id} (metadata not available via CDN)")
+        
+        # Still save the manifest JSON for reference
+        manifest_dir = os.path.join(base_dir, "meta", manifest_id[:2], manifest_id[2:4])
+        os.makedirs(manifest_dir, exist_ok=True)
+        manifest_path = os.path.join(manifest_dir, manifest_id)
+        
+        try:
+            downloader.download_raw_manifest(manifest_id, manifest_path, generation=2)
+            
+            with open(manifest_path, 'rb') as f:
+                manifest_json = decompress_if_needed(f.read())
+            
+            # Save human-readable JSON to debug folder
+            debug_manifest_path = os.path.join(debug_dir, f"{manifest_id}_offlineDepot_manifest.json")
+            with open(debug_manifest_path, 'w') as f:
+                json.dump(manifest_json, f, indent=2)
+            
+            print(f"   ✓ Saved offlineDepot manifest (chunks not downloadable)")
+        except Exception as e:
+            print(f"   ⚠ Could not download offlineDepot manifest: {e}")
     
     all_chunks = {}  # {md5: {'chunk': chunk_info, 'product_id': product_id}}
+    
+    # Process regular depots
     for depot in depot_json['depots']:
         manifest_id = depot['manifest']
         depot_product_id = depot.get('productId', game_id)  # Get depot's product ID
@@ -210,11 +246,13 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     
     print(f"   SFC chunks: {len(sfc_chunks)}, Regular chunks: {len(regular_chunks)}, SFC-fallback chunks: {len(sfc_fallback_chunks)}")
     
-    downloaded = 0
-    skipped = 0
-    failed = 0
+    # Thread-safe counters and lock for progress updates
+    stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'progress': 0}
+    stats_lock = Lock()
     
-    for i, (md5, chunk_data) in enumerate(sfc_chunks + regular_chunks + sfc_fallback_chunks, 1):
+    def download_chunk(chunk_task):
+        """Download a single chunk (thread-safe)."""
+        md5, chunk_data = chunk_task
         chunk_info = chunk_data['chunk']
         product_id = chunk_data['product_id']
         has_sfc_fallback = chunk_data.get('has_sfc_fallback', False)
@@ -224,38 +262,113 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         os.makedirs(chunk_dir, exist_ok=True)
         chunk_path = os.path.join(chunk_dir, md5)
         
+        result = None
+        with stats_lock:
+            stats['progress'] += 1
+            current = stats['progress']
+        
         if os.path.exists(chunk_path):
-            print(f"   [{i}/{len(all_chunks)}] Exists: {md5} ({chunk_type})")
-            skipped += 1
+            result = ('skipped', md5, chunk_type)
+            with stats_lock:
+                stats['skipped'] += 1
         else:
             try:
                 downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
-                print(f"   [{i}/{len(all_chunks)}] Downloaded: {chunk_path} ({chunk_type})")
-                downloaded += 1
+                result = ('downloaded', chunk_path, chunk_type)
+                with stats_lock:
+                    stats['downloaded'] += 1
             except Exception as e:
                 if has_sfc_fallback:
-                    print(f"   [{i}/{len(all_chunks)}] Not on CDN: {md5} (file content available in SFC)")
-                    skipped += 1
+                    result = ('sfc_fallback', md5, None)
+                    with stats_lock:
+                        stats['skipped'] += 1
                 else:
-                    print(f"   [{i}/{len(all_chunks)}] FAILED: {md5} (product {product_id} - {e})")
-                    failed += 1
+                    result = ('failed', md5, f"product {product_id} - {e}")
+                    with stats_lock:
+                        stats['failed'] += 1
+        
+        return (current, len(all_chunks), result)
     
-    print(f"\n✓ Downloaded: {downloaded}, Skipped: {skipped}, Failed: {failed}")
+    # Download chunks in parallel
+    all_chunk_tasks = sfc_chunks + regular_chunks + sfc_fallback_chunks
+    
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(download_chunk, task) for task in all_chunk_tasks]
+        
+        # Priority queue for ordered output
+        result_buffer = {}
+        next_to_print = 1
+        
+        for future in as_completed(futures):
+            current, total, result = future.result()
+            status, identifier, extra = result
+            
+            # Buffer this result
+            result_buffer[current] = (status, identifier, extra, total)
+            
+            # Print all consecutive results starting from next_to_print
+            while next_to_print in result_buffer:
+                status, identifier, extra, total = result_buffer.pop(next_to_print)
+                
+                if status == 'downloaded':
+                    print(f"   [{next_to_print}/{total}] Downloaded: {identifier} ({extra})")
+                elif status == 'skipped':
+                    print(f"   [{next_to_print}/{total}] Exists: {identifier} ({extra})")
+                elif status == 'sfc_fallback':
+                    print(f"   [{next_to_print}/{total}] Not on CDN: {identifier} (file content available in SFC)")
+                elif status == 'failed':
+                    print(f"   [{next_to_print}/{total}] FAILED: {identifier} ({extra})")
+                
+                next_to_print += 1
+    
+    print(f"\n✓ Downloaded: {stats['downloaded']}, Skipped: {stats['skipped']}, Failed: {stats['failed']}")
     
     print(f"\n✓ Complete: {base_dir}")
 
 
 
-def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, platform: str = "windows"):
+def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, platform: str = None, num_workers: int = 8):
     """Archive V1 build mirroring CDN structure.
     
     Args:
         repository_id: The repository timestamp (e.g., 37794096)
+        platform: Platform (windows/osx/linux) - if None, will try to auto-detect
+        num_workers: Number of parallel download workers (default: 8)
     """
     print(f"\n=== Archiving V1 Build ===")
     print(f"Game: {game_name} ({game_id})")
-    print(f"Platform: {platform}")
     print(f"Repository: {repository_id}")
+    
+    # If platform not provided, try all platforms to find which one has this repository
+    if platform is None:
+        print("\nAuto-detecting platform...")
+        for test_platform in ['windows', 'osx', 'linux']:
+            test_base_dir = os.path.join(game_name, "v1", "manifests", game_id, test_platform, repository_id)
+            test_repo_path = os.path.join(test_base_dir, "repository.json")
+            try:
+                # Try to download repository.json to test if it exists
+                os.makedirs(test_base_dir, exist_ok=True)
+                downloader.download_raw_repository(game_id, test_platform, repository_id, test_repo_path)
+                # If successful, we found the platform
+                platform = test_platform
+                print(f"   ✓ Platform detected: {platform}")
+                # Parse the repository JSON to confirm
+                with open(test_repo_path, 'rb') as f:
+                    repo_json = decompress_if_needed(f.read())
+                systems = repo_json.get('product', {}).get('depots', [{}])[0].get('systems', [])
+                if systems:
+                    print(f"   ✓ Confirmed from depot systems: {systems}")
+                break
+            except Exception:
+                # Clean up failed attempt
+                if os.path.exists(test_repo_path):
+                    os.remove(test_repo_path)
+                continue
+        
+        if platform is None:
+            raise ValueError(f"Could not auto-detect platform for repository {repository_id}. Please specify --platform.")
+    
+    print(f"Platform: {platform}")
     
     # Base: <game_name>/v1/manifests/{game_id}/{platform}/{timestamp}/
     base_dir = os.path.join(game_name, "v1", "manifests", game_id, platform, repository_id)
@@ -294,8 +407,8 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     main_bin_path = os.path.join(depot_dir, "main.bin")
     
     try:
-        # Use 4 parallel workers for faster downloads (50 MiB chunks each)
-        downloader.download_main_bin(game_id, platform, repository_id, main_bin_path, num_workers=4)
+        # Use parallel workers for faster downloads (50 MiB chunks each)
+        downloader.download_main_bin(game_id, platform, repository_id, main_bin_path, num_workers=num_workers)
         print(f"   ✓ {main_bin_path}")
     except Exception as e:
         print(f"   ✗ Failed to download main.bin: {e}")
@@ -334,9 +447,11 @@ Examples:
     
     parser.add_argument("game_name", nargs="?", 
                        help="Game name for directory structure (default: game_<id>)")
-    parser.add_argument("--platform", default="windows",
+    parser.add_argument("--platform",
                        choices=["windows", "osx", "linux"],
-                       help="Platform (default: windows)")
+                       help="Platform (required for --build-id, auto-detected for V2 --repository-id, optional for V1 --repository-id)")
+    parser.add_argument("--workers", type=int, default=8,
+                       help="Number of parallel download workers (default: 8)")
     
     args = parser.parse_args()
     
@@ -351,6 +466,12 @@ Examples:
     
     # Determine repository ID
     if args.build_id:
+        # Build ID lookup requires platform for API call
+        if not args.platform:
+            print("\nERROR: --platform is required when using --build-id")
+            print("Tip: Use --repository-id instead to skip platform requirement for V2 builds")
+            sys.exit(1)
+        
         # Look up build in API to get repository ID
         generation = 2 if args.build_type == "v2" else 1
         try:
@@ -364,12 +485,16 @@ Examples:
         # Use repository ID directly
         repository_id = args.repository_id
         print(f"\nUsing repository ID directly: {repository_id}")
+        if args.build_type == "v2":
+            print("   Platform will be auto-detected from depot metadata")
+        elif not args.platform:
+            print("   Platform will be auto-detected by testing all platforms")
     
     # Archive the build
     if args.build_type == "v2":
-        archive_v2_build(downloader, args.game_id, repository_id, game_name)
+        archive_v2_build(downloader, args.game_id, repository_id, game_name, num_workers=args.workers)
     else:  # v1
-        archive_v1_build(downloader, args.game_id, repository_id, game_name, args.platform)
+        archive_v1_build(downloader, args.game_id, repository_id, game_name, args.platform, num_workers=args.workers)
 
 
 if __name__ == "__main__":
