@@ -30,6 +30,7 @@ class RepositoryInfo:
     platform: str
     depot_ids: List[str]
     offline_depot_id: Optional[str]
+    depot_languages: Dict[str, List[str]]  # Map depot_id -> language list
     file_size: int
 
 
@@ -135,6 +136,7 @@ def scan_repositories(meta_dir: Path) -> List[RepositoryInfo]:
                     platform=platform,
                     depot_ids=repo_data['depotIds'],
                     offline_depot_id=repo_data.get('offlineDepotId'),
+                    depot_languages=repo_data.get('depotLanguages', {}),
                     file_size=len(compressed_data),
                 ))
                 
@@ -347,13 +349,17 @@ def write_part_0(
             
             # Add manifest entries for each depot
             for depot_id in repo.depot_ids:
+                # Get languages for this depot and encode to bitflags
+                lang_list = repo.depot_languages.get(depot_id, [])
+                languages1, languages2 = languages_to_bitflags(lang_list)
+                
                 # Create placeholder ManifestEntry (will update with actual offsets later)
                 manifest_entry = ManifestEntry(
                     depot_id=md5_to_bytes(depot_id),
                     offset=0,  # Placeholder
                     size=0,    # Placeholder
-                    languages1=0,  # TODO: Parse from depot JSON
-                    languages2=0,
+                    languages1=languages1,
+                    languages2=languages2,
                 )
                 build_meta.manifests.append(manifest_entry)
             

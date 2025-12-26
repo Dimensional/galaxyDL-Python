@@ -344,6 +344,7 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
             
             # Collect all depot manifests (including offlineDepot if present)
             depot_ids = []
+            depot_languages = {}  # Map depot_id -> language list
             offline_depot_id = None
             
             # Add offlineDepot if present (tracked separately for skipping chunks)
@@ -351,11 +352,14 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
             if offline_depot and offline_depot.get('manifest'):
                 offline_depot_id = offline_depot.get('manifest')
                 depot_ids.append(offline_depot_id)
+                depot_languages[offline_depot_id] = offline_depot.get('languages', [])
             
             # Add regular depots
             for depot in json_data.get('depots', []):
                 if depot.get('manifest'):
-                    depot_ids.append(depot.get('manifest'))
+                    manifest_id = depot.get('manifest')
+                    depot_ids.append(manifest_id)
+                    depot_languages[manifest_id] = depot.get('languages', [])
             
             return {
                 'productId': product_id,
@@ -363,6 +367,7 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
                 'platform': json_data.get('platform', ''),
                 'depotIds': depot_ids,
                 'offlineDepotId': offline_depot_id,  # Track which depot is offline
+                'depotLanguages': depot_languages,  # Map depot_id -> language list
             }
         else:
             # It's a depot manifest, return None (pack doesn't need these)
@@ -498,6 +503,62 @@ def languages_to_bitflags(languages: List[str]) -> Tuple[int, int]:
                 languages2 |= (1 << (bit_pos - 64))
     
     return (languages1, languages2)
+
+
+def decode_languages(languages1: int, languages2: int) -> List[str]:
+    """
+    Decode 128-bit language flags back to language codes.
+    
+    If both are 0, returns ['*'] (wildcard/no specific languages).
+    
+    Args:
+        languages1: First 64 bits
+        languages2: Second 64 bits
+        
+    Returns:
+        List of language codes
+    """
+    # No flags means wildcard (all languages/no specific languages)
+    if languages1 == 0 and languages2 == 0:
+        return ['*']
+    
+    # Reverse mapping based on official GOG language list
+    BIT_TO_LANGUAGE = {
+        0: 'af-ZA', 1: 'ar', 2: 'az-AZ', 3: 'be-BY', 4: 'bn-BD',
+        5: 'bg-BG', 6: 'bs-BA', 7: 'ca-ES', 8: 'cs-CZ', 9: 'cy-GB',
+        10: 'da-DK', 11: 'de-DE', 12: 'dv-MV', 13: 'el-GR', 14: 'en-GB',
+        15: 'en-US', 16: 'es-ES', 17: 'es-MX', 18: 'et-EE', 19: 'eu-ES',
+        20: 'fa-IR', 21: 'fi-FI', 22: 'fo-FO', 23: 'fr-FR', 24: 'gl-ES',
+        25: 'gu-IN', 26: 'he-IL', 27: 'hi-IN', 28: 'hr-HR', 29: 'hu-HU',
+        30: 'hy-AM', 31: 'id-ID', 32: 'is-IS', 33: 'it-IT', 34: 'ja-JP',
+        35: 'jv-ID', 36: 'ka-GE', 37: 'kk-KZ', 38: 'kn-IN', 39: 'ko-KR',
+        40: 'kok-IN', 41: 'ky-KG', 42: 'la', 43: 'lt-LT', 44: 'lv-LV',
+        45: 'ml-IN', 46: 'mi-NZ', 47: 'mk-MK', 48: 'mn-MN', 49: 'mr-IN',
+        50: 'ms-MY', 51: 'mt-MT', 52: 'nb-NO', 53: 'nl-NL', 54: 'ns-ZA',
+        55: 'pa-IN', 56: 'pl-PL', 57: 'ps-AR', 58: 'pt-BR', 59: 'pt-PT',
+        60: 'ro-RO', 61: 'ru-RU', 62: 'sa-IN', 63: 'sk-SK', 64: 'sl-SI',
+        65: 'sq-AL', 66: 'sr-SP', 67: 'sv-SE', 68: 'sw-KE', 69: 'ta-IN',
+        70: 'te-IN', 71: 'th-TH', 72: 'tl-PH', 73: 'tn-ZA', 74: 'tr-TR',
+        75: 'tt-RU', 76: 'uk-UA', 77: 'ur-PK', 78: 'uz-UZ', 79: 'vi-VN',
+        80: 'xh-ZA', 81: 'zh-Hans', 82: 'zh-Hant', 83: 'zu-ZA',
+    }
+    
+    result = []
+    
+    # Check first 64 bits
+    for bit_pos in range(64):
+        if languages1 & (1 << bit_pos):
+            if bit_pos in BIT_TO_LANGUAGE:
+                result.append(BIT_TO_LANGUAGE[bit_pos])
+    
+    # Check second 64 bits
+    for bit_pos in range(64):
+        if languages2 & (1 << bit_pos):
+            actual_pos = bit_pos + 64
+            if actual_pos in BIT_TO_LANGUAGE:
+                result.append(BIT_TO_LANGUAGE[actual_pos])
+    
+    return result
 
 
 def sort_files_alphanumeric(file_list: List[Path]) -> List[Path]:

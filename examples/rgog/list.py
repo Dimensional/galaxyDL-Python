@@ -5,7 +5,7 @@ Lists contents of RGOG archives, optionally showing detailed build information.
 """
 
 from pathlib import Path
-from .common import RGOGHeader, ProductMetadata, BuildMetadata, OS_NAMES
+from .common import RGOGHeader, ProductMetadata, BuildMetadata, OS_NAMES, bytes_to_md5, decode_languages
 
 
 def execute(args):
@@ -58,7 +58,23 @@ def execute(args):
                 build = BuildMetadata.from_bytes(build_data[offset:])
                 print(f"  Build {build.build_id}:")
                 print(f"    OS: {OS_NAMES.get(build.os, 'Unknown')}")
-                print(f"    Manifests: {len(build.manifests)}")
+                
+                if args.detailed:
+                    # Show repository details
+                    repo_id = bytes_to_md5(build.repository_id)
+                    print(f"    Repository: {repo_id} ({build.repository_size} bytes)")
+                    
+                    # Show each manifest
+                    print(f"    Manifests: {len(build.manifests)}")
+                    for i, manifest in enumerate(build.manifests):
+                        depot_id = bytes_to_md5(manifest.depot_id)
+                        # Decode language flags to actual language codes
+                        lang_codes = decode_languages(manifest.languages1, manifest.languages2)
+                        lang_info = ", ".join(lang_codes) if lang_codes else "no languages"
+                        print(f"      {i + 1}. Depot {depot_id} ({manifest.size} bytes, {lang_info})")
+                else:
+                    print(f"    Manifests: {len(build.manifests)}")
+                    
                 offset += build.size()
     
     return 0
