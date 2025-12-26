@@ -70,6 +70,8 @@ def main():
     verify_parser.add_argument('--build', type=int, help='Verify specific build only')
     verify_parser.add_argument('--quick', action='store_true',
                              help='Quick verify (check structure only, skip MD5)')
+    verify_parser.add_argument('--detailed', action='store_true',
+                             help='Show detailed verification of each file')
     
     # Info command
     info_parser = subparsers.add_parser('info', help='Show archive information')

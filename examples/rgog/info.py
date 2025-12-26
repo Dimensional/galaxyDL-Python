@@ -30,7 +30,7 @@ def execute(args):
         print(f"  Magic: {header.magic.decode('ascii')}")
         print(f"  Version: {header.version}")
         print(f"  Type: {header.archive_type} ({'Base' if header.archive_type == 1 else 'Patch'})")
-        print(f"  Part: {header.part_number} of {header.total_parts}")
+        print(f"  Part: {header.part_number + 1} of {header.total_parts}")
         
         print(f"\nCounts:")
         print(f"  Total Builds: {header.total_build_count}")

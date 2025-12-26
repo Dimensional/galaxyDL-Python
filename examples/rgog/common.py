@@ -332,16 +332,42 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
         
         # Repository files have buildId and depots array at root level
         if 'buildId' in json_data and 'depots' in json_data:
+            # Convert buildId to int (stored as string in JSON)
+            build_id = json_data.get('buildId')
+            if build_id is not None:
+                build_id = int(build_id)
+            
+            # Convert baseProductId to int (stored as string in JSON)
+            product_id = json_data.get('baseProductId')
+            if product_id is not None:
+                product_id = int(product_id)
+            
+            # Collect all depot manifests (including offlineDepot if present)
+            depot_ids = []
+            offline_depot_id = None
+            
+            # Add offlineDepot if present (tracked separately for skipping chunks)
+            offline_depot = json_data.get('offlineDepot')
+            if offline_depot and offline_depot.get('manifest'):
+                offline_depot_id = offline_depot.get('manifest')
+                depot_ids.append(offline_depot_id)
+            
+            # Add regular depots
+            for depot in json_data.get('depots', []):
+                if depot.get('manifest'):
+                    depot_ids.append(depot.get('manifest'))
+            
             return {
-                'productId': json_data.get('baseProductId'),
-                'buildId': json_data.get('buildId'),
+                'productId': product_id,
+                'buildId': build_id,
                 'platform': json_data.get('platform', ''),
-                'depotIds': [depot.get('manifest') for depot in json_data.get('depots', [])],
+                'depotIds': depot_ids,
+                'offlineDepotId': offline_depot_id,  # Track which depot is offline
             }
         else:
             # It's a depot manifest, return None (pack doesn't need these)
             return None
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError, ValueError):
         return None
 
 
@@ -354,11 +380,25 @@ def parse_repository_file(data: bytes) -> dict:
     """
     try:
         repo_data = json.loads(data)
+        
+        # Collect all depot manifests (including offlineDepot if present)
+        depot_ids = []
+        
+        # Add offlineDepot if present
+        offline_depot = repo_data.get('offlineDepot')
+        if offline_depot and offline_depot.get('manifest'):
+            depot_ids.append(offline_depot.get('manifest'))
+        
+        # Add regular depots
+        for depot in repo_data.get('depots', []):
+            if depot.get('manifest'):
+                depot_ids.append(depot.get('manifest'))
+        
         return {
             'productId': repo_data.get('baseProductId'),
             'buildId': repo_data.get('buildId'),
             'platform': repo_data.get('platform', ''),
-            'depotIds': [depot.get('manifest') for depot in repo_data.get('depots', [])],
+            'depotIds': depot_ids,
         }
     except (json.JSONDecodeError, KeyError) as e:
         raise ValueError(f"Invalid repository JSON: {e}")

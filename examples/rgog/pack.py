@@ -29,6 +29,7 @@ class RepositoryInfo:
     product_id: int
     platform: str
     depot_ids: List[str]
+    offline_depot_id: Optional[str]
     file_size: int
 
 
@@ -133,6 +134,7 @@ def scan_repositories(meta_dir: Path) -> List[RepositoryInfo]:
                     product_id=repo_data['productId'],
                     platform=platform,
                     depot_ids=repo_data['depotIds'],
+                    offline_depot_id=repo_data.get('offlineDepotId'),
                     file_size=len(compressed_data),
                 ))
                 
@@ -147,17 +149,30 @@ def scan_repositories(meta_dir: Path) -> List[RepositoryInfo]:
 
 def scan_chunks(chunks_dir: Path) -> List[ChunkInfo]:
     """
-    Scan all chunk files in the chunks directory.
+    Scan all chunk files in the store directory.
     
+    Chunk files are stored in nested structure: store/{hex0:2}/{hex2:2}/{fullhash}
     Returns sorted list of ChunkInfo objects.
     """
     chunks = []
     
-    # Find all .chunk files
-    chunk_files = list(chunks_dir.rglob('*.chunk'))
+    # Find all files in nested store directory structure
+    # Pattern: store/XX/YY/hash (where XX = first 2 hex chars, YY = next 2 hex chars)
+    chunk_files = list(chunks_dir.rglob('*/*'))
     
     for chunk_path in chunk_files:
-        filename = chunk_path.stem  # Remove .chunk extension
+        if not chunk_path.is_file():
+            continue
+        
+        filename = chunk_path.name  # Just the MD5 hash
+        
+        # Skip if not a valid MD5 hex string (32 chars)
+        if len(filename) != 32:
+            continue
+        
+        # Verify it matches the expected path structure: store/{hex0:2}/{hex2:4}/{fullhash}
+        if chunk_path.parent.parent != chunks_dir:
+            continue
         
         try:
             # Convert filename (MD5 hex) to binary
@@ -189,11 +204,18 @@ def get_chunks_for_build(
     
     Parses depot manifests to extract chunk lists, deduplicates,
     and returns only chunks that exist on disk.
+    
+    Note: Skips offlineDepot chunks as they cannot be downloaded currently.
     """
     all_chunk_ids = set()
     
     # Process each depot manifest referenced by the repository
     for depot_id in repository.depot_ids:
+        # Skip offlineDepot chunks (manifest is preserved but chunks not downloadable)
+        if depot_id == repository.offline_depot_id:
+            print(f"  Depot {depot_id} (offlineDepot): Skipped (chunks not downloadable)")
+            continue
+        
         manifest_path = find_depot_manifest_file(meta_dir, depot_id)
         if not manifest_path:
             print(f"  Warning: Depot manifest {depot_id} not found, skipping")
@@ -222,10 +244,12 @@ def get_chunks_for_build(
     # Find chunk files that match the IDs
     chunks = []
     for chunk_id in sorted(all_chunk_ids):  # Alphanumeric sort
-        chunk_path = chunks_dir / f"{chunk_id}.chunk"
+        # Construct path using nested structure: store/{hex0:2}/{hex2:2}/{fullhash}
+        # Example: 0030af763e1a09ab307d84a24d0066a2 -> store/00/30/0030af763e1a09ab307d84a24d0066a2
+        chunk_path = chunks_dir / chunk_id[:2] / chunk_id[2:4] / chunk_id
         
         if not chunk_path.exists():
-            print(f"  Warning: Chunk file {chunk_id}.chunk not found")
+            print(f"  Warning: Chunk file {chunk_id} not found")
             continue
         
         try:
@@ -271,9 +295,10 @@ def write_part_0(
     build_map: Dict[int, RepositoryInfo],
     repositories: List[RepositoryInfo],
     part_assignment: Optional[PartAssignment],
+    meta_dir: Path,
 ):
     """Write Part 0 of the archive (main part with all metadata)."""
-    print(f"  Writing Part 0: {output_path}")
+    print(f"  Writing Part 1: {output_path}")
     
     with open(output_path, 'wb') as f:
         # Step 1: Write placeholder header
@@ -309,17 +334,27 @@ def write_part_0(
                 'linux': OS_LINUX,
             }.get(repo.platform.lower(), OS_NULL)
             
-            # Create build metadata with placeholder offsets
-            # Note: We're not storing individual depot manifests in metadata
-            # since repositories already contain all depot information
+            # Create build metadata with depot manifests
             build_meta = BuildMetadata(
                 build_id=build_id,
                 os=os_code,
                 repository_id=md5_to_bytes(repo.filename),
                 repository_offset=0,  # Placeholder
                 repository_size=0,    # Placeholder
-                manifests=[],  # Empty - depot info is in repository
+                manifests=[],  # Will populate with depot manifests
             )
+            
+            # Add manifest entries for each depot
+            for depot_id in repo.depot_ids:
+                # Create placeholder ManifestEntry (will update with actual offsets later)
+                manifest_entry = ManifestEntry(
+                    depot_id=md5_to_bytes(depot_id),
+                    offset=0,  # Placeholder
+                    size=0,    # Placeholder
+                    languages1=0,  # TODO: Parse from depot JSON
+                    languages2=0,
+                )
+                build_meta.manifests.append(manifest_entry)
             
             build_metadata_list.append(build_meta)
             f.write(build_meta.to_bytes())
@@ -327,9 +362,10 @@ def write_part_0(
         f.write(get_padding(f.tell()))
         build_metadata_size = f.tell() - build_metadata_offset
         
-        # Step 4: Write Build Files (repositories only)
+        # Step 4: Write Build Files (repositories and depot manifests)
         build_files_offset = f.tell()
         repo_offsets = {}
+        depot_offsets = {}
         
         # Write repositories
         for repo in repositories:
@@ -339,10 +375,28 @@ def write_part_0(
                 f.write(data)
             repo_offsets[repo.filename] = (offset, len(data))
         
+        # Write depot manifests for each build
+        for repo in repositories:
+            for depot_id in repo.depot_ids:
+                # Find depot manifest file
+                manifest_path = find_depot_manifest_file(meta_dir, depot_id)
+                if not manifest_path:
+                    print(f"  Warning: Depot manifest {depot_id} not found for build {repo.build_id}")
+                    continue
+                
+                # Write depot manifest
+                offset = f.tell() - build_files_offset
+                with open(manifest_path, 'rb') as mf:
+                    data = mf.read()
+                    f.write(data)
+                
+                # Key by (build_id, depot_id) to avoid conflicts
+                depot_offsets[(repo.build_id, depot_id)] = (offset, len(data))
+        
         f.write(get_padding(f.tell()))
         build_files_size = f.tell() - build_files_offset
         
-        # Step 5: Update Build Metadata with actual repository offsets
+        # Step 5: Update Build Metadata with actual offsets
         current_pos = f.tell()
         f.seek(build_metadata_offset)
         
@@ -353,6 +407,15 @@ def write_part_0(
                 repo_off, repo_size = repo_offsets[repo_filename]
                 build_meta.repository_offset = repo_off
                 build_meta.repository_size = repo_size
+            
+            # Update depot manifest offsets
+            for manifest in build_meta.manifests:
+                depot_id_str = bytes_to_md5(manifest.depot_id)
+                key = (build_meta.build_id, depot_id_str)
+                if key in depot_offsets:
+                    depot_off, depot_size = depot_offsets[key]
+                    manifest.offset = depot_off
+                    manifest.size = depot_size
             
             # Write updated build metadata
             f.write(build_meta.to_bytes())
@@ -426,7 +489,7 @@ def write_part_n(
     part_assignment: PartAssignment,
 ):
     """Write Part N (additional parts with only chunks)."""
-    print(f"  Writing Part {part_number}: {output_path}")
+    print(f"  Writing Part {part_number + 1}: {output_path}")
     
     with open(output_path, 'wb') as f:
         # Step 1: Write placeholder header
@@ -561,13 +624,21 @@ def execute(args):
     if not input_dir.exists():
         raise ValueError(f"Input directory does not exist: {input_dir}")
     
+    # Require v2 subdirectory for GOG Galaxy v2 format
+    v2_dir = input_dir / 'v2'
+    if not v2_dir.exists():
+        raise ValueError(f"v2 directory not found: {v2_dir}\nRGOG only supports GOG Galaxy v2 format")
+    
+    input_dir = v2_dir
+    print(f"Using v2 directory: {input_dir}")
+    
     meta_dir = input_dir / 'meta'
-    chunks_dir = input_dir / 'chunks'
+    chunks_dir = input_dir / 'store'
     
     if not meta_dir.exists():
         raise ValueError(f"Meta directory not found: {meta_dir}")
     if not chunks_dir.exists():
-        raise ValueError(f"Chunks directory not found: {chunks_dir}")
+        raise ValueError(f"Store directory not found: {chunks_dir}")
     
     print("\n[1/5] Scanning files...")
     repositories = scan_repositories(meta_dir)
@@ -627,6 +698,7 @@ def execute(args):
         build_map,
         repositories,
         part_assignments[0] if part_assignments else None,
+        meta_dir,
     )
     
     # Write additional parts
@@ -644,10 +716,10 @@ def execute(args):
     
     print("\n[5/5] Complete!")
     print(f"\nArchive created successfully:")
-    print(f"  Main: {output_path} ({output_path.stat().st_size / (1024**3):.2f} GB)")
+    print(f"  Part 1: {output_path} ({output_path.stat().st_size / (1024**3):.2f} GB)")
     for i in range(1, total_parts):
         part_path = Path(f"{output_path}.{i}")
         if part_path.exists():
-            print(f"  Part {i}: {part_path} ({part_path.stat().st_size / (1024**3):.2f} GB)")
+            print(f"  Part {i + 1}: {part_path} ({part_path.stat().st_size / (1024**3):.2f} GB)")
     
     return 0

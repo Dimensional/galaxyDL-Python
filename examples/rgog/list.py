@@ -51,6 +51,10 @@ def execute(args):
             print(f"\nBuilds:")
             offset = 0
             while offset < len(build_data):
+                # Need at least 48 bytes for build header
+                if offset + 48 > len(build_data):
+                    break
+                    
                 build = BuildMetadata.from_bytes(build_data[offset:])
                 print(f"  Build {build.build_id}:")
                 print(f"    OS: {OS_NAMES.get(build.os, 'Unknown')}")
