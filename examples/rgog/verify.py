@@ -37,8 +37,8 @@ def execute(args):
     if not args.quick:
         errors = 0
         
-        # Verify build files (compressed repository JSON)
-        if header.total_build_count > 0:
+        # Verify build files (compressed repository JSON) - only in Part 0
+        if header.part_number == 0 and header.total_build_count > 0:
             print(f"\nVerifying {header.total_build_count} build file(s)...")
             
             with open(archive_path, 'rb') as f:

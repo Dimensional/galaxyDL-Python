@@ -158,7 +158,7 @@ def scan_chunks(chunks_dir: Path) -> List[ChunkInfo]:
     
     # Find all files in nested store directory structure
     # Pattern: store/XX/YY/hash (where XX = first 2 hex chars, YY = next 2 hex chars)
-    chunk_files = list(chunks_dir.rglob('*/*'))
+    chunk_files = list(chunks_dir.rglob('*/*/*'))
     
     for chunk_path in chunk_files:
         if not chunk_path.is_file():
@@ -170,8 +170,9 @@ def scan_chunks(chunks_dir: Path) -> List[ChunkInfo]:
         if len(filename) != 32:
             continue
         
-        # Verify it matches the expected path structure: store/{hex0:2}/{hex2:4}/{fullhash}
-        if chunk_path.parent.parent != chunks_dir:
+        # Verify it matches the expected path structure: store/{hex0:2}/{hex2:2}/{fullhash}
+        # chunk_path.parent.parent.parent should be chunks_dir (3 levels deep)
+        if chunk_path.parent.parent.parent != chunks_dir:
             continue
         
         try:
