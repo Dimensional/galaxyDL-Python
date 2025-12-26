@@ -251,7 +251,7 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     stats_lock = Lock()
     
     def download_chunk(chunk_task):
-        """Download a single chunk (thread-safe)."""
+        """Download a single chunk (thread-safe) with retry logic."""
         md5, chunk_data = chunk_task
         chunk_info = chunk_data['chunk']
         product_id = chunk_data['product_id']
@@ -262,29 +262,51 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         os.makedirs(chunk_dir, exist_ok=True)
         chunk_path = os.path.join(chunk_dir, md5)
         
-        result = None
-        
         if os.path.exists(chunk_path):
-            result = ('skipped', md5, chunk_type)
             with stats_lock:
                 stats['skipped'] += 1
-        else:
+            return ('skipped', md5, chunk_type)
+        
+        # Retry logic for transient network errors
+        max_retries = 3
+        retry_delay = 1  # seconds
+        last_error = None
+        
+        for attempt in range(max_retries):
             try:
                 downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
-                result = ('downloaded', chunk_path, chunk_type)
                 with stats_lock:
                     stats['downloaded'] += 1
+                return ('downloaded', chunk_path, chunk_type)
+                
+            except (ConnectionResetError, ConnectionAbortedError, 
+                    ConnectionError, TimeoutError) as e:
+                last_error = e
+                # Transient network errors - retry
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                # Final attempt failed - fall through to error handling below
+                    
             except Exception as e:
-                if has_sfc_fallback:
-                    result = ('sfc_fallback', md5, None)
-                    with stats_lock:
-                        stats['skipped'] += 1
-                else:
-                    result = ('failed', md5, f"product {product_id} - {e}")
-                    with stats_lock:
-                        stats['failed'] += 1
+                # Non-retryable errors (HTTP 404, 403, etc.)
+                last_error = e
+                break  # Don't retry for non-network errors
         
-        return result
+        # If we get here, all retries failed or we hit a non-retryable error
+        if has_sfc_fallback:
+            with stats_lock:
+                stats['skipped'] += 1
+            return ('sfc_fallback', md5, None)
+        else:
+            error_msg = f"product {product_id} - {last_error}"
+            if isinstance(last_error, (ConnectionResetError, ConnectionAbortedError, ConnectionError, TimeoutError)):
+                error_msg += f" (after {max_retries} attempts)"
+            with stats_lock:
+                stats['failed'] += 1
+            return ('failed', md5, error_msg)
     
     # Download chunks in parallel
     all_chunk_tasks = sfc_chunks + regular_chunks + sfc_fallback_chunks
