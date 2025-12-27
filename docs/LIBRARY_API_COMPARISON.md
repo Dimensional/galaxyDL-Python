@@ -93,7 +93,7 @@ This document explains the differences between the various GOG API endpoints for
 - Returns fewer games than `get_owned_games()` (498 vs 787)
 - Multiple requests needed to get all pages
 - **Cannot be used for complete library access**
-- The `system` parameter adds 2 more games (500 total) but the API still only returns 498 unique IDidden games, etc.)
+- The `system` parameter adds 2 more games (500 total) but the API still only returns 498 unique ID)
 - # 3. `get_game_details(game_id)` - Game Details Endpoint
 
 **Endpoint:** `https://embed.gog.com/account/gameDetails/{game_id}.json`

@@ -9,30 +9,29 @@ DIRECTORY STRUCTURE:
 The script creates a directory structure matching GOG's V2 CDN layout:
 
 <output_dir>/
-├── meta/                           # Manifest files (zlib compressed)
-│   ├── {hash[:2]}/
-│   │   └── {hash[2:4]}/
-│   │       └── {hash}              # Root patch manifest (zlib compressed JSON)
-│   └── {hash[:2]}/
-│       └── {hash[2:4]}/
-│           └── {hash}              # Depot patch manifest (zlib compressed JSON)
+├── v2/
+│   └── patches/
+│       ├── meta/                       # Patch manifest files (zlib compressed)
+│       │   └── {hash[:2]}/
+│       │       └── {hash[2:4]}/
+│       │           └── {hash}          # Root/depot patch manifests
+│       │
+│       └── store/                      # Patch delta chunks
+│           └── {hash[:2]}/
+│               └── {hash[2:4]}/
+│                   └── {hash}          # .delta file (xdelta3 format)
 │
-├── debug/                          # Human-readable manifests
-│   ├── {root_hash}_manifest.json   # Decompressed root manifest
-│   └── {depot_hash}_manifest.json  # Decompressed depot patch diffs
+├── debug/                              # Human-readable manifests
+│   ├── {root_hash}_root.json           # Decompressed root manifest
+│   └── {depot_hash}_depot.json         # Decompressed depot patch diffs
 │
-├── depot/patches/                  # Patch delta chunks
-│   └── {hash[:2]}/
-│       └── {hash[2:4]}/
-│           └── {hash}              # .delta file (xdelta3 format)
-│
-└── patch_summary.json              # Download summary and metadata
+└── patch_summary.json                  # Download summary and metadata
 
 FILE TYPES:
 -----------
-- meta/*.json: Raw zlib-compressed manifest JSONs (as downloaded from CDN)
+- v2/patches/meta/*: Raw zlib-compressed manifest JSONs (as downloaded from CDN)
+- v2/patches/store/*: xdelta3 delta files for binary patching
 - debug/*.json: Decompressed, pretty-printed manifests for inspection
-- depot/patches/*: xdelta3 delta files for binary patching
 - patch_summary.json: Metadata about the patch download
 
 MANIFEST CONTENTS:
@@ -81,7 +80,7 @@ from galaxy_dl import GalaxyAPI, AuthManager, Manifest, Patch, utils
 
 def save_raw_manifest(raw_bytes: bytes, manifest_hash: str, manifest_type: str, base_dir: Path):
     """
-    Save raw zlib-compressed manifest to meta/ folder using galaxy_path structure.
+    Save raw zlib-compressed manifest to v2/patches/meta/ folder using galaxy_path structure.
     
     Args:
         raw_bytes: Raw bytes from API (zlib-compressed)
@@ -89,14 +88,14 @@ def save_raw_manifest(raw_bytes: bytes, manifest_hash: str, manifest_type: str, 
         manifest_type: 'root' or 'depot'
         base_dir: Base directory for patches
     """
-    # Use galaxy_path structure: meta/{hash[:2]}/{hash[2:4]}/{hash}
-    meta_dir = base_dir / "meta" / manifest_hash[:2] / manifest_hash[2:4]
+    # Use galaxy_path structure: v2/patches/meta/{hash[:2]}/{hash[2:4]}/{hash}
+    meta_dir = base_dir / "v2" / "patches" / "meta" / manifest_hash[:2] / manifest_hash[2:4]
     meta_dir.mkdir(parents=True, exist_ok=True)
     
     meta_file = meta_dir / manifest_hash
     meta_file.write_bytes(raw_bytes)
     
-    print(f"       ✓ Saved raw manifest: meta/{manifest_hash[:2]}/{manifest_hash[2:4]}/{manifest_hash}")
+    print(f"       ✓ Saved raw manifest: v2/patches/meta/{manifest_hash[:2]}/{manifest_hash[2:4]}/{manifest_hash}")
     return meta_file
 
 
@@ -171,13 +170,13 @@ def download_patch_chunk(
     if actual_md5 != chunk_md5:
         raise ValueError(f"Chunk MD5 mismatch: {actual_md5} != {chunk_md5}")
     
-    # Save to depot/patches/ folder
-    depot_dir = base_dir / "depot" / "patches" / chunk_md5[:2] / chunk_md5[2:4]
-    depot_dir.mkdir(parents=True, exist_ok=True)
-    depot_file = depot_dir / chunk_md5
-    depot_file.write_bytes(chunk_data)
+    # Save to v2/patches/store/ folder (mirrors CDN structure)
+    store_dir = base_dir / "v2" / "patches" / "store" / chunk_md5[:2] / chunk_md5[2:4]
+    store_dir.mkdir(parents=True, exist_ok=True)
+    store_file = store_dir / chunk_md5
+    store_file.write_bytes(chunk_data)
     
-    return depot_file
+    return store_file
 
 
 def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path, num_workers: int = 8, language: str | None = None):

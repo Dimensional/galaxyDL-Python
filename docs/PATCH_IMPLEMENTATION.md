@@ -37,13 +37,97 @@ The complete **patch downloading framework** has been added to galaxy-dl. This e
 
 ### 1. Patch Detection
 ```python
+# Step 1: Query content-system.gog.com
+patch_info = api.get_patch_info(product_id, old_build_id, new_build_id)
+# Returns: {id, from, to, link} or None
+
+# Step 2: Download root patch manifest
+root_manifest = api.get_patch_manifest(patch_info['link'])
+# Returns: {algorithm, depots[], clientId, clientSecret}
+
+# Step 3: Download depot manifests and build FilePatchDiff objects
 patch = Patch.get(api, new_manifest, old_manifest, "en", dlc_ids)
+# Internally:
+#  - Downloads depot manifests using depot hashes
+#  - Parses DepotDiff items
+#  - Creates FilePatchDiff objects
 ```
 
-- Queries GOG: `/products/{id}/patches?from_build={old}&to_build={new}`
-- Downloads patch metadata manifest
-- Parses depot-specific patch manifests
-- Returns `Patch` object with list of `FilePatchDiff` items
+**API Calls Made:**
+1. `GET https://content-system.gog.com/products/{id}/patches?from_build_id={old}&to_build_id={new}`
+   - Returns patch info with repository link
+2. `GET {repository_link}` (from step 1)
+   - Returns root patch manifest (zlib-compressed)
+
+## API Response Handling
+
+The Content System API returns three distinct response types when querying for patches:
+
+### 1. Valid Patch Response
+```python
+{
+    "id": "67cf3e9356b831e8738b482ed3a8dabf",
+    "from": "49999910531550131",
+    "to": "56452082907692588",
+    "link": "https://cdn.gog.com/content-system/v2/patches/meta/67/cf/67cf3e9356b831e8738b482ed3a8dabf"
+}
+```
+**Interpretation**: Patch exists and is available for download.
+
+### 2. Empty Manifest Response
+```python
+# Initial query returns valid metadata:
+{
+    "id": "abc123...",
+    "from": "56908074018002614",
+    "to": "57325296727241979",
+    "link": "https://cdn.gog.com/content-system/v2/patches/meta/..."
+}
+
+# But downloading the manifest from the link returns only:
+{}
+```
+**Interpretation**: Build IDs are valid and compatible, but no patch content exists between them. GOG validated the request but has no patch data to provide. This is a valid state, not an error.
+
+**Common Causes**:
+- GOG expects full reinstall instead of differential patching
+- Patch was created but later removed from CDN
+- Builds are too similar to warrant a differential patch
+
+### 3. Error Response
+```python
+{
+    "error": "not_found",
+    "error_description": ""
+}
+```
+**Interpretation**: Build IDs are invalid, incompatible, or don't exist.
+
+**Common Causes**:
+- Build IDs from different products
+- Build IDs from different platforms (Windows/macOS/Linux mismatch)
+- Build IDs in wrong chronological order (newer → older)
+- Non-existent or deleted build IDs
+
+**Example**:
+```python
+patch_info = api.get_patch_info(product_id, from_build, to_build)
+
+if not patch_info:
+    print("Request failed")
+elif 'error' in patch_info:
+    print(f"Invalid request: {patch_info['error']}")
+else:
+    # Download root manifest
+    root_manifest = api.get_patch_manifest(patch_info['link'])
+    
+    if not root_manifest or root_manifest == {}:
+        print("No patch available (empty manifest)")
+    else:
+        print(f"Patch available with {len(root_manifest.get('depots', []))} depots")
+```
+3. For each depot: `GET https://cdn.gog.com/content-system/v2/meta/{hash[:2]}/{hash[2:4]}/{hash}`
+   - Returns depot patch manifest with DepotDiff items
 
 ### 2. Manifest Comparison
 ```python
@@ -61,27 +145,71 @@ Result:
 - `diff.patched` - Files with patches (download .delta)
 - `diff.deleted` - Files to remove
 
-### 3. Patch Download
-```python
-links = api.get_secure_link(product_id, "/", root_path="/patches/store")
+**Root Patch Manifest Structure:**
+```json
+{
+  "algorithm": "xdelta3",
+  "depots": [
+    {
+      "productId": "1207658924",
+      "manifest": "abc123def456...",  // Hash for depot manifest
+      "languages": ["en-US", "en-GB"],
+      "size": 1234567
+    }
+  ],
+  "clientId": "...",      // Used for secure link authentication
+  "clientSecret": "..."   // Used for secure link authentication
+}
 ```
 
-- Get secure CDN links with `/patches/store` root
-- Download patch chunks using `compressedMd5` from chunks
-- Save as `.delta` files
+**Depot Patch Manifest Structure:**
+```json
+{
+  "depot": {
+    "items": [
+      {
+        "type": "DepotDiff",
+        "path": "game.exe",
+        "md5Before": "abc123...",  // Source file MD5
+        "md5After": "def456...",   // Target file MD5
+        "chunks": [
+          {
+            "compressedMd5": "xyz789...",
+            "compressedSize": 12345
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 3. Patch Download
+```python
+# Get credentials from root manifest
+client_id = root_manifest['clientId']
+client_secret = root_manifest['clientSecret']
+
+# Get secure link for each chunk
+secure_urls = api.get_patch_secure_link(
+    product_id=product_id,
+    chunk_hash=chunk_md5,
+    client_id=client_id,
+    client_secret=client_secret
+)
+
+# Build final URL and download
+chunk_path = utils.galaxy_path(chunk_md5)
+chunk_url = secure_urls[0].replace("{GALAXY_PATH}", chunk_path)
+# Download chunk and save as .delta file
+```
+
+- Get secure CDN links using clientId/clientSecret from root manifest
+- Download patch chunks using `compressedMd5` from DepotDiff chunks
+- Save as `.delta` files in proper directory structure
 
 ### 4. Patch Application (Separate)
 
-**Option A: pyxdelta**
-```bash
-pip install galaxy-dl[patch]
-```
-```python
-import pyxdelta
-pyxdelta.patch(source, delta, output)
-```
-
-**Option B: External xdelta3**
 ```bash
 xdelta3 -d -s old_file file.delta new_file
 ```
@@ -138,15 +266,38 @@ patch = ["pyxdelta>=1.0.0"]
 
 ### New Methods
 
-- `GalaxyAPI.get_patch_info(product_id, from_build, to_build)`
-- `GalaxyAPI.get_patch_manifest(patch_link)`
-- `GalaxyAPI.get_patch_depot_manifest(depot_manifest_id)`
+- `GalaxyAPI.get_patch_info(product_id, from_build_id, to_build_id)`
+  - Queries content-system.gog.com for patch availability
+  - Returns: `{id, from, to, link}` or `None`
+  
+- `GalaxyAPI.get_patch_manifest(patch_link, return_raw=False)`
+  - Downloads root patch manifest (zlib-compressed)
+  - Returns: `{algorithm, depots[], clientId, clientSecret}`
+  - With `return_raw=True`: Returns `(raw_bytes, dict)` tuple
+  
+- `GalaxyAPI.get_patch_depot_manifest(depot_manifest_id, return_raw=False)`
+  - Downloads depot-specific patch manifest
+  - Returns: `{depot: {items: [DepotDiff, ...]}}`
+  - With `return_raw=True`: Returns `(raw_bytes, dict)` tuple
+  
+- `GalaxyAPI.get_patch_secure_link(product_id, chunk_hash, client_id, client_secret)`
+  - Gets secure CDN URL for patch chunk download
+  - Returns: List of URLs with `{GALAXY_PATH}` placeholder
+  
 - `Patch.get(api, new_manifest, old_manifest, language, dlc_ids)`
+  - High-level: Calls all patch methods internally
+  - Downloads and parses all depot manifests
+  - Returns: `Patch` object with `FilePatchDiff` items
+  
 - `Manifest.compare(new_manifest, old_manifest, patch)`
+  - Compares manifests with optional patch support
+  - Returns: `ManifestDiff` with categorized files
 
 ### Modified Methods
 
-- `GalaxyAPI.get_secure_link()` - Added `root_path` parameter
+- None - All patch functionality is additive via new methods
+
+**Note:** The original design included modifying `get_secure_link()` with a `root_path` parameter, but the actual implementation uses a dedicated `get_patch_secure_link()` method with `clientId`/`clientSecret` parameters instead.
 
 ### New Classes
 
