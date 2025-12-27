@@ -50,7 +50,10 @@ def execute(args):
             
             print(f"\nBuilds:")
             offset = 0
-            while offset < len(build_data):
+            builds_read = 0
+            
+            # Read exactly header.total_build_count builds (don't read padding)
+            while builds_read < header.total_build_count and offset < len(build_data):
                 # Need at least 48 bytes for build header
                 if offset + 48 > len(build_data):
                     break
@@ -76,5 +79,6 @@ def execute(args):
                     print(f"    Manifests: {len(build.manifests)}")
                     
                 offset += build.size()
+                builds_read += 1
     
     return 0

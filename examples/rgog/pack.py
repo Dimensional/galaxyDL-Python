@@ -693,10 +693,16 @@ def execute(args):
     total_parts = len(part_assignments)
     print(f"  Archive will be split into {total_parts} part(s)")
     
-    # Write Part 0
+    # Write Part 0 (now Part 1 in user-facing numbering)
     print("\n[4/5] Writing archive...")
+    
+    # Generate part 1 filename: <base>_1.rgog
+    base_name = output_path.stem  # Get name without extension
+    output_dir = output_path.parent
+    part_1_path = output_dir / f"{base_name}_1.rgog"
+    
     write_part_0(
-        output_path,
+        part_1_path,
         archive_type,
         total_parts,
         total_builds,
@@ -710,7 +716,7 @@ def execute(args):
     
     # Write additional parts
     for part in part_assignments[1:]:
-        part_path = Path(f"{output_path}.{part.part_number}")
+        part_path = output_dir / f"{base_name}_{part.part_number + 1}.rgog"
         write_part_n(
             part_path,
             archive_type,
@@ -723,9 +729,9 @@ def execute(args):
     
     print("\n[5/5] Complete!")
     print(f"\nArchive created successfully:")
-    print(f"  Part 1: {output_path} ({output_path.stat().st_size / (1024**3):.2f} GB)")
+    print(f"  Part 1: {part_1_path} ({part_1_path.stat().st_size / (1024**3):.2f} GB)")
     for i in range(1, total_parts):
-        part_path = Path(f"{output_path}.{i}")
+        part_path = output_dir / f"{base_name}_{i + 1}.rgog"
         if part_path.exists():
             print(f"  Part {i + 1}: {part_path} ({part_path.stat().st_size / (1024**3):.2f} GB)")
     

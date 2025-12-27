@@ -34,6 +34,31 @@ OS_NAMES = {
     OS_LINUX: "Linux",
 }
 
+# GOG language codes to bit positions (0-83)
+# This is the source of truth for language encoding/decoding
+LANGUAGE_TO_BIT = {
+    'en-US': 0, 'en-GB': 1, 'fr-FR': 2, 'de-DE': 3, 'es-ES': 4,
+    'es-MX': 5, 'pl-PL': 6, 'ru-RU': 7, 'it-IT': 8, 'pt-BR': 9,
+    'pt-PT': 10, 'zh-Hans': 11, 'zh-Hant': 12, 'ja-JP': 13, 'ko-KR': 14,
+    'tr-TR': 15, 'cs-CZ': 16, 'hu-HU': 17, 'nl-NL': 18, 'sv-SE': 19,
+    'nb-NO': 20, 'da-DK': 21, 'fi-FI': 22, 'ar': 23, 'th-TH': 24,
+    'el-GR': 25, 'ro-RO': 26, 'uk-UA': 27, 'bg-BG': 28, 'hr-HR': 29,
+    'vi-VN': 30, 'id-ID': 31, 'hi-IN': 32, 'he-IL': 33, 'sk-SK': 34,
+    'sl-SI': 35, 'sr-Latn': 36, 'lt-LT': 37, 'lv-LV': 38, 'et-EE': 39,
+    'is-IS': 40, 'ms-MY': 41, 'fil-PH': 42, 'ca-ES': 43, 'eu-ES': 44,
+    'gl-ES': 45, 'cy-GB': 46, 'ga-IE': 47, 'mt-MT': 48, 'af-ZA': 49,
+    'sw-KE': 50, 'zu-ZA': 51, 'xh-ZA': 52, 'am-ET': 53, 'bn-BD': 54,
+    'gu-IN': 55, 'kn-IN': 56, 'ml-IN': 57, 'mr-IN': 58, 'pa-IN': 59,
+    'ta-IN': 60, 'te-IN': 61, 'ne-NP': 62, 'si-LK': 63, 'my-MM': 64,
+    'km-KH': 65, 'lo-LA': 66, 'ka-GE': 67, 'hy-AM': 68, 'az-Latn-AZ': 69,
+    'kk-KZ': 70, 'uz-Latn-UZ': 71, 'mn-MN': 72, 'bo-CN': 73, 'ug-CN': 74,
+    'ps-AF': 75, 'fa-IR': 76, 'ur-PK': 77, 'sd-Arab-PK': 78, 'ks-Arab-IN': 79,
+    'dz-BT': 80, 'ti-ET': 81, 'om-ET': 82, 'so-SO': 83,
+}
+
+# Reverse mapping derived from LANGUAGE_TO_BIT
+BIT_TO_LANGUAGE = {bit: lang for lang, bit in LANGUAGE_TO_BIT.items()}
+
 
 @dataclass
 class RGOGHeader:
@@ -470,32 +495,11 @@ def languages_to_bitflags(languages: List[str]) -> Tuple[int, int]:
     
     Returns (languages1, languages2) tuple.
     """
-    # GOG language codes to bit positions (0-83)
-    LANGUAGE_MAP = {
-        'en-US': 0, 'en-GB': 1, 'fr-FR': 2, 'de-DE': 3, 'es-ES': 4,
-        'es-MX': 5, 'pl-PL': 6, 'ru-RU': 7, 'it-IT': 8, 'pt-BR': 9,
-        'pt-PT': 10, 'zh-Hans': 11, 'zh-Hant': 12, 'ja-JP': 13, 'ko-KR': 14,
-        'tr-TR': 15, 'cs-CZ': 16, 'hu-HU': 17, 'nl-NL': 18, 'sv-SE': 19,
-        'nb-NO': 20, 'da-DK': 21, 'fi-FI': 22, 'ar': 23, 'th-TH': 24,
-        'el-GR': 25, 'ro-RO': 26, 'uk-UA': 27, 'bg-BG': 28, 'hr-HR': 29,
-        'vi-VN': 30, 'id-ID': 31, 'hi-IN': 32, 'he-IL': 33, 'sk-SK': 34,
-        'sl-SI': 35, 'sr-Latn': 36, 'lt-LT': 37, 'lv-LV': 38, 'et-EE': 39,
-        'is-IS': 40, 'ms-MY': 41, 'fil-PH': 42, 'ca-ES': 43, 'eu-ES': 44,
-        'gl-ES': 45, 'cy-GB': 46, 'ga-IE': 47, 'mt-MT': 48, 'af-ZA': 49,
-        'sw-KE': 50, 'zu-ZA': 51, 'xh-ZA': 52, 'am-ET': 53, 'bn-BD': 54,
-        'gu-IN': 55, 'kn-IN': 56, 'ml-IN': 57, 'mr-IN': 58, 'pa-IN': 59,
-        'ta-IN': 60, 'te-IN': 61, 'ne-NP': 62, 'si-LK': 63, 'my-MM': 64,
-        'km-KH': 65, 'lo-LA': 66, 'ka-GE': 67, 'hy-AM': 68, 'az-Latn-AZ': 69,
-        'kk-KZ': 70, 'uz-Latn-UZ': 71, 'mn-MN': 72, 'bo-CN': 73, 'ug-CN': 74,
-        'ps-AF': 75, 'fa-IR': 76, 'ur-PK': 77, 'sd-Arab-PK': 78, 'ks-Arab-IN': 79,
-        'dz-BT': 80, 'ti-ET': 81, 'om-ET': 82, 'so-SO': 83,
-    }
-    
     languages1 = 0
     languages2 = 0
     
     for lang in languages:
-        bit_pos = LANGUAGE_MAP.get(lang)
+        bit_pos = LANGUAGE_TO_BIT.get(lang)
         if bit_pos is not None:
             if bit_pos < 64:
                 languages1 |= (1 << bit_pos)
@@ -521,27 +525,6 @@ def decode_languages(languages1: int, languages2: int) -> List[str]:
     # No flags means wildcard (all languages/no specific languages)
     if languages1 == 0 and languages2 == 0:
         return ['*']
-    
-    # Reverse mapping based on official GOG language list
-    BIT_TO_LANGUAGE = {
-        0: 'af-ZA', 1: 'ar', 2: 'az-AZ', 3: 'be-BY', 4: 'bn-BD',
-        5: 'bg-BG', 6: 'bs-BA', 7: 'ca-ES', 8: 'cs-CZ', 9: 'cy-GB',
-        10: 'da-DK', 11: 'de-DE', 12: 'dv-MV', 13: 'el-GR', 14: 'en-GB',
-        15: 'en-US', 16: 'es-ES', 17: 'es-MX', 18: 'et-EE', 19: 'eu-ES',
-        20: 'fa-IR', 21: 'fi-FI', 22: 'fo-FO', 23: 'fr-FR', 24: 'gl-ES',
-        25: 'gu-IN', 26: 'he-IL', 27: 'hi-IN', 28: 'hr-HR', 29: 'hu-HU',
-        30: 'hy-AM', 31: 'id-ID', 32: 'is-IS', 33: 'it-IT', 34: 'ja-JP',
-        35: 'jv-ID', 36: 'ka-GE', 37: 'kk-KZ', 38: 'kn-IN', 39: 'ko-KR',
-        40: 'kok-IN', 41: 'ky-KG', 42: 'la', 43: 'lt-LT', 44: 'lv-LV',
-        45: 'ml-IN', 46: 'mi-NZ', 47: 'mk-MK', 48: 'mn-MN', 49: 'mr-IN',
-        50: 'ms-MY', 51: 'mt-MT', 52: 'nb-NO', 53: 'nl-NL', 54: 'ns-ZA',
-        55: 'pa-IN', 56: 'pl-PL', 57: 'ps-AR', 58: 'pt-BR', 59: 'pt-PT',
-        60: 'ro-RO', 61: 'ru-RU', 62: 'sa-IN', 63: 'sk-SK', 64: 'sl-SI',
-        65: 'sq-AL', 66: 'sr-SP', 67: 'sv-SE', 68: 'sw-KE', 69: 'ta-IN',
-        70: 'te-IN', 71: 'th-TH', 72: 'tl-PH', 73: 'tn-ZA', 74: 'tr-TR',
-        75: 'tt-RU', 76: 'uk-UA', 77: 'ur-PK', 78: 'uz-UZ', 79: 'vi-VN',
-        80: 'xh-ZA', 81: 'zh-Hans', 82: 'zh-Hant', 83: 'zu-ZA',
-    }
     
     result = []
     
