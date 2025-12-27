@@ -107,14 +107,17 @@ def get_repository_from_build(api: GalaxyAPI, game_id: str, build_id: str, platf
         return str(repo_id)
 
 
-def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, num_workers: int = 8):
+def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, num_workers: int = 8, dry_run: bool = False):
     """Archive V2 build mirroring CDN structure.
     
     Args:
         repository_id: The depot/repository hash (e.g., e518c17d90805e8e3998a35fac8b8505)
         num_workers: Number of parallel download threads (default: 8)
+        dry_run: If True, download manifests only, skip chunks (default: False)
     """
     print(f"\n=== Archiving V2 Build ===")
+    if dry_run:
+        print(f"[DRY RUN MODE - Manifests only, no chunks]")
     print(f"Game: {game_name} ({game_id})")
     print(f"Repository: {repository_id}")
     print(f"Workers: {num_workers}")
@@ -239,6 +242,12 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     total_size = sum(c['chunk']['compressedSize'] for c in all_chunks.values())
     print(f"   Total: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
     
+    if dry_run:
+        print(f"   [DRY RUN] Would download {len(all_chunks)} chunks ({total_size/1024/1024:.2f} MB)")
+        print(f"\n✓ Dry run complete: manifests downloaded, chunks skipped")
+        print(f"\n✓ Complete: {base_dir}")
+        return
+    
     # Download SFC chunks first, then regular chunks, then SFC-fallback chunks last
     sfc_chunks = [(md5, data) for md5, data in all_chunks.items() if data.get('is_sfc', False)]
     regular_chunks = [(md5, data) for md5, data in all_chunks.items() if not data.get('is_sfc', False) and not data.get('has_sfc_fallback', False)]
@@ -338,15 +347,18 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
 
 
 
-def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, platform: str = None, num_workers: int = 8):
+def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: str, game_name: str, platform: str = None, num_workers: int = 8, dry_run: bool = False):
     """Archive V1 build mirroring CDN structure.
     
     Args:
         repository_id: The repository timestamp (e.g., 37794096)
         platform: Platform (windows/osx/linux) - if None, will try to auto-detect
         num_workers: Number of parallel download workers (default: 8)
+        dry_run: If True, download manifests only, skip main.bin (default: False)
     """
     print(f"\n=== Archiving V1 Build ===")
+    if dry_run:
+        print(f"[DRY RUN MODE - Manifests only, no main.bin]")
     print(f"Game: {game_name} ({game_id})")
     print(f"Repository: {repository_id}")
     
@@ -412,21 +424,27 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     
     # 3. Download main.bin using authenticated secure links with parallel downloads
     # V1 depots use different path: v1/depots/{game_id}/{platform}/{timestamp}/main.bin
-    print("\n[3/3] Downloading main.bin (depot) with parallel downloads...")
-    depot_dir = os.path.join(game_name, "v1", "depots", game_id, platform, repository_id)
-    os.makedirs(depot_dir, exist_ok=True)
-    main_bin_path = os.path.join(depot_dir, "main.bin")
-    
-    try:
-        # Use parallel workers for faster downloads (50 MiB chunks each)
-        downloader.download_main_bin(game_id, platform, repository_id, main_bin_path, num_workers=num_workers)
-        print(f"   ✓ {main_bin_path}")
-    except Exception as e:
-        print(f"   ✗ Failed to download main.bin: {e}")
-        print("   Note: main.bin requires authentication - ensure you're logged in")
+    if dry_run:
+        print("\n[3/3] Skipping main.bin download (dry run)")
+        print(f"   [DRY RUN] Would download main.bin to: v1/depots/{game_id}/{platform}/{repository_id}/main.bin")
+        print(f"\n✓ Dry run complete: manifests downloaded, main.bin skipped")
+    else:
+        print("\n[3/3] Downloading main.bin (depot) with parallel downloads...")
+        depot_dir = os.path.join(game_name, "v1", "depots", game_id, platform, repository_id)
+        os.makedirs(depot_dir, exist_ok=True)
+        main_bin_path = os.path.join(depot_dir, "main.bin")
+        
+        try:
+            # Use parallel workers for faster downloads (50 MiB chunks each)
+            downloader.download_main_bin(game_id, platform, repository_id, main_bin_path, num_workers=num_workers)
+            print(f"   ✓ {main_bin_path}")
+        except Exception as e:
+            print(f"   ✗ Failed to download main.bin: {e}")
+            print("   Note: main.bin requires authentication - ensure you're logged in")
+        
+        print(f"\n✓ Depot: {depot_dir}")
     
     print(f"\n✓ Manifests: {base_dir}")
-    print(f"✓ Depot: {depot_dir}")
 
 
 def main():
@@ -463,6 +481,8 @@ Examples:
                        help="Platform (required for --build-id, auto-detected for V2 --repository-id, optional for V1 --repository-id)")
     parser.add_argument("--workers", type=int, default=8,
                        help="Number of parallel download workers (default: 8)")
+    parser.add_argument("--dry-run", action="store_true",
+                       help="Download manifests only, skip chunks/main.bin")
     
     args = parser.parse_args()
     
@@ -503,9 +523,9 @@ Examples:
     
     # Archive the build
     if args.build_type == "v2":
-        archive_v2_build(downloader, args.game_id, repository_id, game_name, num_workers=args.workers)
+        archive_v2_build(downloader, args.game_id, repository_id, game_name, num_workers=args.workers, dry_run=args.dry_run)
     else:  # v1
-        archive_v1_build(downloader, args.game_id, repository_id, game_name, args.platform, num_workers=args.workers)
+        archive_v1_build(downloader, args.game_id, repository_id, game_name, args.platform, num_workers=args.workers, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

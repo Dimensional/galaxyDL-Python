@@ -179,10 +179,12 @@ def download_patch_chunk(
     return store_file
 
 
-def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path, num_workers: int = 8, language: str | None = None):
+def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path, num_workers: int = 8, language: str | None = None, dry_run: bool = False):
     """Main patch download workflow with V2 structure."""
     print("=" * 80)
     print("GOG Galaxy Patch Download")
+    if dry_run:
+        print("[DRY RUN MODE - Manifests only, no chunks]")
     print("=" * 80)
     
     # Initialize API
@@ -311,6 +313,11 @@ def main(product_id: str, from_build_id: str, to_build_id: str, output_dir: Path
         
         print(f"   Total items: {len(items)}")
         print(f"   Total chunks: {total_chunks}")
+        
+        if dry_run:
+            print(f"   [DRY RUN] Would download {total_chunks} chunks")
+            all_stats['skipped'] += total_chunks
+            continue
         
         if total_chunks == 0:
             print("   No chunks to download for this depot")
@@ -465,6 +472,8 @@ if __name__ == "__main__":
                        help="Number of parallel download workers (default: 8)")
     parser.add_argument("--language", type=str, default=None,
                        help="Language filter (e.g., 'en', 'de', 'fr'). If not specified, downloads all languages.")
+    parser.add_argument("--dry-run", action="store_true",
+                       help="Download manifests only, skip chunk downloads")
     
     args = parser.parse_args()
     
@@ -474,5 +483,6 @@ if __name__ == "__main__":
         to_build_id=args.to_build_id,
         output_dir=Path(args.output_dir),
         num_workers=args.workers,
-        language=args.language
+        language=args.language,
+        dry_run=args.dry_run
     ))
