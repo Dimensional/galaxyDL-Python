@@ -8,7 +8,7 @@ and validating binary structure.
 import hashlib
 import struct
 from pathlib import Path
-from .common import RGOGHeader, bytes_to_md5
+from .common import RGOGHeader, bytes_to_md5, resolve_first_part, get_all_parts
 
 
 def execute(args):
@@ -18,30 +18,42 @@ def execute(args):
     if not archive_path.exists():
         raise ValueError(f"Archive not found: {archive_path}")
     
-    print(f"RGOG Verify: {archive_path}")
+    # Auto-redirect to first part and get all parts
+    first_part_path, header = resolve_first_part(archive_path)
     
-    # Read and validate header
-    with open(archive_path, 'rb') as f:
-        header_data = f.read(128)
-        header = RGOGHeader.from_bytes(header_data)
+    if first_part_path != archive_path:
+        print(f"Note: Redirecting to first part: {first_part_path}\n")
+    
+    all_parts = get_all_parts(first_part_path, header.total_parts)
+    
+    print(f"RGOG Verify: {first_part_path.stem.rsplit('_', 1)[0] if header.total_parts > 1 else first_part_path.name}")
+    print(f"Verifying {len(all_parts)} part(s)...")
+    
+    # Verify each part's header
+    for part_path in all_parts:
+        with open(part_path, 'rb') as f:
+            header_data = f.read(128)
+            part_header = RGOGHeader.from_bytes(header_data)
+            
+            if part_header.magic != b'RGOG':
+                print(f"✗ Part {part_path.name}: Invalid magic number")
+                return 1
         
-        if header.magic != b'RGOG':
-            print("✗ Invalid magic number")
-            return 1
-        
-        print("✓ Header valid")
-        print(f"  Parts: {header.total_parts}")
-        print(f"  Builds: {header.total_build_count}")
-        print(f"  Chunks: {header.local_chunk_count}")
+        print(f"✓ Part {part_path.name}: Header valid")
+    
+    print(f"\nArchive Summary:")
+    print(f"  Total Parts: {header.total_parts}")
+    print(f"  Builds: {header.total_build_count}")
+    print(f"  Total Chunks: {header.total_chunk_count}")
     
     if not args.quick:
         errors = 0
         
-        # Verify build files (compressed repository JSON) - only in Part 0
-        if header.part_number == 0 and header.total_build_count > 0:
+        # Verify build files (compressed repository JSON) - only in first part
+        if header.total_build_count > 0:
             print(f"\nVerifying {header.total_build_count} build file(s)...")
             
-            with open(archive_path, 'rb') as f:
+            with open(first_part_path, 'rb') as f:
                 # Seek to build metadata section
                 f.seek(header.build_metadata_offset)
                 
@@ -124,59 +136,65 @@ def execute(args):
                 if errors == 0:
                     print(f"✓ All {header.total_build_count} build file(s) verified successfully")
         
-        # Verify chunk MD5 checksums
-        if header.local_chunk_count > 0:
-            print(f"\nVerifying {header.local_chunk_count} chunks...")
+        # Verify chunk MD5 checksums across all parts
+        if header.total_chunk_count > 0:
+            print(f"\nVerifying {header.total_chunk_count} chunks across {len(all_parts)} part(s)...")
             
-            with open(archive_path, 'rb') as f:
-                # Seek to chunk metadata section
-                f.seek(header.chunk_metadata_offset)
-                
-                for i in range(header.local_chunk_count):
-                    # Read chunk metadata entry (32 bytes)
-                    chunk_meta = f.read(32)
-                    if len(chunk_meta) != 32:
-                        print(f"✗ Chunk {i + 1}: Failed to read metadata")
-                        errors += 1
+            # Verify chunks in each part
+            for part_path in all_parts:
+                with open(part_path, 'rb') as f:
+                    # Read part header to get chunk info
+                    part_header_data = f.read(128)
+                    part_header = RGOGHeader.from_bytes(part_header_data)
+                    
+                    if part_header.local_chunk_count == 0:
                         continue
                     
-                    # Parse: compressed_md5 (16) + offset (8) + compressed_size (8)
-                    compressed_md5, offset, compressed_size = struct.unpack('<16sQQ', chunk_meta)
+                    # Seek to chunk metadata section
+                    f.seek(part_header.chunk_metadata_offset)
                     
-                    # Offset is relative to chunk_files_offset, make it absolute
-                    absolute_offset = header.chunk_files_offset + offset
-                    
-                    # Read chunk data
-                    current_pos = f.tell()
-                    f.seek(absolute_offset)
-                    chunk_data = f.read(compressed_size)
-                    f.seek(current_pos)
-                    
-                    if len(chunk_data) != compressed_size:
-                        print(f"✗ Chunk {i + 1}: Size mismatch (expected {compressed_size}, got {len(chunk_data)})")
-                        errors += 1
-                        continue
-                    
-                    # Calculate MD5
-                    actual_md5 = hashlib.md5(chunk_data).digest()
-                    
-                    if actual_md5 != compressed_md5:
-                        expected = bytes_to_md5(compressed_md5)
-                        got = bytes_to_md5(actual_md5)
-                        print(f"✗ Chunk {i + 1}: MD5 mismatch (expected {expected}, got {got})")
-                        errors += 1
-                        continue
-                    
-                    # Detailed output for each chunk
-                    if args.detailed:
-                        md5_str = bytes_to_md5(compressed_md5)
-                        print(f"  ✓ Chunk {i + 1}: {md5_str} ({compressed_size} bytes)")
-                    # Progress indicator every 50 chunks (only if not detailed)
-                    elif (i + 1) % 50 == 0:
-                        print(f"  Verified {i + 1}/{header.local_chunk_count} chunks...")
-                
-                if errors == 0:
-                    print(f"✓ All {header.local_chunk_count} chunks verified successfully")
+                    for i in range(part_header.local_chunk_count):
+                        # Read chunk metadata entry (32 bytes)
+                        chunk_meta = f.read(32)
+                        if len(chunk_meta) != 32:
+                            print(f"✗ Part {part_path.name}, Chunk {i + 1}: Failed to read metadata")
+                            errors += 1
+                            continue
+                        
+                        # Parse: compressed_md5 (16) + offset (8) + compressed_size (8)
+                        compressed_md5, offset, compressed_size = struct.unpack('<16sQQ', chunk_meta)
+                        
+                        # Offset is relative to chunk_files_offset, make it absolute
+                        absolute_offset = part_header.chunk_files_offset + offset
+                        
+                        # Read chunk data
+                        current_pos = f.tell()
+                        f.seek(absolute_offset)
+                        chunk_data = f.read(compressed_size)
+                        f.seek(current_pos)
+                        
+                        if len(chunk_data) != compressed_size:
+                            print(f"✗ Part {part_path.name}, Chunk {i + 1}: Size mismatch (expected {compressed_size}, got {len(chunk_data)})")
+                            errors += 1
+                            continue
+                        
+                        # Calculate MD5
+                        actual_md5 = hashlib.md5(chunk_data).digest()
+                        
+                        if actual_md5 != compressed_md5:
+                            expected = bytes_to_md5(compressed_md5)
+                            got = bytes_to_md5(actual_md5)
+                            print(f"✗ Part {part_path.name}, Chunk {i + 1}: MD5 mismatch (expected {expected}, got {got})")
+                            errors += 1
+                            continue
+                        
+                        # Detailed output for each chunk
+                        if args.detailed:
+                            md5_str = bytes_to_md5(compressed_md5)
+                            print(f"  ✓ Part {part_path.name}, Chunk {i + 1}: {md5_str} ({compressed_size} bytes)")
+            
+            if errors == 0:
+                print(f"✓ All {header.total_chunk_count} chunks verified successfully")
         
         # Final result
         if errors > 0:

@@ -386,9 +386,16 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
                     depot_ids.append(manifest_id)
                     depot_languages[manifest_id] = depot.get('languages', [])
             
+            # Extract product name from products array
+            product_name = 'Unknown'
+            products = json_data.get('products', [])
+            if products and len(products) > 0:
+                product_name = products[0].get('name', 'Unknown')
+            
             return {
                 'productId': product_id,
                 'buildId': build_id,
+                'productName': product_name,
                 'platform': json_data.get('platform', ''),
                 'depotIds': depot_ids,
                 'offlineDepotId': offline_depot_id,  # Track which depot is offline
@@ -551,6 +558,103 @@ def sort_files_alphanumeric(file_list: List[Path]) -> List[Path]:
     Uses lowercase for case-insensitive sorting.
     """
     return sorted(file_list, key=lambda p: p.name.lower())
+
+
+def resolve_first_part(archive_path: Path) -> Tuple[Path, RGOGHeader]:
+    """
+    Resolve to first part of a multi-part archive and return its header.
+    
+    If the provided path is not the first part, automatically finds and
+    returns the first part path. Useful for commands that need to read
+    metadata from the first part.
+    
+    Handles both 0-based (legacy) and 1-based part numbering.
+    
+    Args:
+        archive_path: Path to any part of the archive
+        
+    Returns:
+        Tuple of (first_part_path, header)
+        
+    Raises:
+        ValueError: If archive is invalid or first part cannot be found
+    """
+    # Read header from provided path
+    with open(archive_path, 'rb') as f:
+        header_data = f.read(128)
+        header = RGOGHeader.from_bytes(header_data)
+        
+        # Validate header
+        if header.magic != b'RGOG':
+            raise ValueError("Invalid RGOG archive: bad magic number")
+    
+    # If this is the first part (0 for legacy, 1 for current), return it
+    if header.part_number in (0, 1):
+        return (archive_path, header)
+    
+    # Try to derive first part filename
+    # Multi-part naming: base_1.rgog, base_2.rgog, etc.
+    archive_name = archive_path.stem  # Remove .rgog extension
+    
+    # Check if it ends with _N pattern
+    if '_' in archive_name:
+        parts = archive_name.rsplit('_', 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            # Reconstruct first part name
+            base_name = parts[0]
+            first_part_path = archive_path.parent / f"{base_name}_1.rgog"
+            
+            if first_part_path.exists():
+                # Read and validate first part header
+                with open(first_part_path, 'rb') as f:
+                    first_header_data = f.read(128)
+                    first_header = RGOGHeader.from_bytes(first_header_data)
+                    
+                    if first_header.magic != b'RGOG':
+                        raise ValueError(f"Invalid first part: {first_part_path}")
+                    
+                    # Accept both 0 (legacy) and 1 (current) as first part
+                    if first_header.part_number not in (0, 1):
+                        raise ValueError(f"Derived first part has invalid part number: {first_part_path}")
+                    
+                    return (first_part_path, first_header)
+    
+    # Could not derive first part
+    raise ValueError(
+        f"Archive is part {header.part_number} of {header.total_parts}, "
+        f"but could not find first part. Please specify the first part (_1.rgog)"
+    )
+
+
+def get_all_parts(first_part_path: Path, total_parts: int) -> List[Path]:
+    """
+    Get paths to all parts of a multi-part archive.
+    
+    Args:
+        first_part_path: Path to the first part (_1.rgog)
+        total_parts: Total number of parts
+        
+    Returns:
+        List of paths to all parts (in order)
+        
+    Raises:
+        ValueError: If any part is missing
+    """
+    if total_parts == 1:
+        return [first_part_path]
+    
+    # Extract base name (remove _1.rgog)
+    base_name = first_part_path.stem.rsplit('_', 1)[0]
+    parent_dir = first_part_path.parent
+    
+    parts = []
+    for part_num in range(1, total_parts + 1):
+        part_path = parent_dir / f"{base_name}_{part_num}.rgog"
+        if not part_path.exists():
+            raise ValueError(f"Missing archive part: {part_path}")
+        parts.append(part_path)
+    
+    return parts
 
 
 def calculate_metadata_size(build_count: int, manifest_counts: List[int]) -> int:

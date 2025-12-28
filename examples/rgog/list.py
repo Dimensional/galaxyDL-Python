@@ -5,7 +5,10 @@ Lists contents of RGOG archives, optionally showing detailed build information.
 """
 
 from pathlib import Path
-from .common import RGOGHeader, ProductMetadata, BuildMetadata, OS_NAMES, bytes_to_md5, decode_languages
+from .common import (
+    RGOGHeader, ProductMetadata, BuildMetadata, OS_NAMES, 
+    bytes_to_md5, decode_languages, resolve_first_part
+)
 
 
 def execute(args):
@@ -15,10 +18,17 @@ def execute(args):
     if not archive_path.exists():
         raise ValueError(f"Archive not found: {archive_path}")
     
-    print(f"RGOG Archive: {archive_path}")
+    # Automatically resolve to first part if needed
+    first_part_path, header = resolve_first_part(archive_path)
     
-    # Read header
-    with open(archive_path, 'rb') as f:
+    if first_part_path != archive_path:
+        print(f"Note: Redirecting to first part: {first_part_path}\n")
+    
+    print(f"RGOG Archive: {first_part_path}")
+    
+    # Read archive data from first part
+    with open(first_part_path, 'rb') as f:
+        # Validate header (already read by resolve_first_part, but re-read for simplicity)
         header_data = f.read(128)
         header = RGOGHeader.from_bytes(header_data)
         

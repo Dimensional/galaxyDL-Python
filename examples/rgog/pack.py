@@ -27,6 +27,7 @@ class RepositoryInfo:
     filename: str
     build_id: int
     product_id: int
+    product_name: str
     platform: str
     depot_ids: List[str]
     offline_depot_id: Optional[str]
@@ -133,6 +134,7 @@ def scan_repositories(meta_dir: Path) -> List[RepositoryInfo]:
                     filename=file_path.name,
                     build_id=repo_data['buildId'],
                     product_id=repo_data['productId'],
+                    product_name=repo_data.get('productName', 'Unknown'),
                     platform=platform,
                     depot_ids=repo_data['depotIds'],
                     offline_depot_id=repo_data.get('offlineDepotId'),
@@ -493,10 +495,11 @@ def write_part_n(
     total_parts: int,
     total_build_count: int,
     total_chunk_count: int,
+    product_metadata: ProductMetadata,
     part_assignment: PartAssignment,
 ):
-    """Write Part N (additional parts with only chunks)."""
-    print(f"  Writing Part {part_number + 1}: {output_path}")
+    """Write Part N (additional parts with product metadata and chunks)."""
+    print(f"  Writing Part {part_number}: {output_path}")
     
     with open(output_path, 'wb') as f:
         # Step 1: Write placeholder header
@@ -510,7 +513,14 @@ def write_part_n(
         )
         f.write(header.to_bytes())
         
-        # Step 2: Write Chunk Metadata (placeholders)
+        # Step 2: Write Product Metadata
+        product_offset = f.tell()
+        product_data = product_metadata.to_bytes()
+        f.write(product_data)
+        f.write(get_padding(f.tell()))
+        product_size = f.tell() - product_offset
+        
+        # Step 3: Write Chunk Metadata (placeholders)
         chunk_metadata_offset = f.tell()
         chunk_metadata_list = []
         
@@ -550,6 +560,8 @@ def write_part_n(
         f.seek(current_pos)
         
         # Step 5: Update Header
+        header.product_metadata_offset = product_offset
+        header.product_metadata_size = product_size
         header.chunk_metadata_offset = chunk_metadata_offset
         header.chunk_metadata_size = chunk_metadata_size
         header.chunk_files_offset = chunk_files_offset
@@ -576,9 +588,9 @@ def calculate_part_assignments(
         List of PartAssignment objects
     """
     parts = []
-    current_part = 0
+    current_part = 1  # Start at 1 (1-based part numbering)
     current_chunks = []
-    current_size = base_metadata_size if current_part == 0 else 128  # Header size
+    current_size = base_metadata_size if current_part == 1 else 128  # Header size
     
     for chunk in chunks:
         chunk_overhead = 32  # ChunkMetadata size
@@ -596,7 +608,7 @@ def calculate_part_assignments(
             # Start new part
             current_part += 1
             current_chunks = []
-            current_size = 128  # Just header for Part 1+
+            current_size = 128  # Just header for subsequent parts
         
         # Add chunk to current part
         chunk.part_number = current_part
@@ -672,10 +684,28 @@ def execute(args):
     # Extract product info from first repository
     first_repo = repositories[0]
     product_id = first_repo.product_id
-    product_name = input_dir.name  # Use directory name as product name
+    product_name = first_repo.product_name
+    
+    # Validate that all repositories have the same product ID
+    print("\n[2/5] Validating repositories...")
+    mismatched_repos = []
+    for repo in repositories:
+        if repo.product_id != product_id:
+            mismatched_repos.append(f"  Build {repo.build_id}: product_id={repo.product_id} (expected {product_id})")
+    
+    if mismatched_repos:
+        print(f"Error: Found repositories with different product IDs:")
+        for msg in mismatched_repos:
+            print(msg)
+        raise ValueError(
+            f"All repositories must have the same product ID. "
+            f"Expected {product_id}, but found {len(mismatched_repos)} mismatched repository/repositories."
+        )
+    
+    print(f"  All repositories have product ID: {product_id}")
     
     # Group repositories by build ID
-    print("\n[2/5] Processing build metadata...")
+    print("\n[3/5] Processing build metadata...")
     build_map = group_builds(repositories)
     total_builds = len(build_map)
     print(f"  Organized {total_builds} builds")
@@ -688,13 +718,13 @@ def execute(args):
     base_metadata_size = 128 + product_metadata_size + build_metadata_size
     
     # Calculate part assignments
-    print("\n[3/5] Calculating part assignments...")
+    print("\n[4/5] Calculating part assignments...")
     part_assignments = calculate_part_assignments(chunks, base_metadata_size, max_part_size)
     total_parts = len(part_assignments)
     print(f"  Archive will be split into {total_parts} part(s)")
     
-    # Write Part 0 (now Part 1 in user-facing numbering)
-    print("\n[4/5] Writing archive...")
+    # Write Part 1 (first part in user-facing numbering)
+    print("\n[5/5] Writing archive...")
     
     # Generate part 1 filename: <base>_1.rgog
     base_name = output_path.stem  # Get name without extension
@@ -716,7 +746,7 @@ def execute(args):
     
     # Write additional parts
     for part in part_assignments[1:]:
-        part_path = output_dir / f"{base_name}_{part.part_number + 1}.rgog"
+        part_path = output_dir / f"{base_name}_{part.part_number}.rgog"
         write_part_n(
             part_path,
             archive_type,
@@ -724,6 +754,7 @@ def execute(args):
             total_parts,
             total_builds,
             len(chunks),
+            product_metadata,
             part,
         )
     
