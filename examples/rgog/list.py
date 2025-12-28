@@ -84,7 +84,7 @@ def execute(args):
                         # Decode language flags to actual language codes
                         lang_codes = decode_languages(manifest.languages1, manifest.languages2)
                         lang_info = ", ".join(lang_codes) if lang_codes else "no languages"
-                        print(f"      {i + 1}. Depot {depot_id} ({manifest.size} bytes, {lang_info})")
+                        print(f"      {i + 1}. Depot {depot_id} ({manifest.size} bytes, {lang_info}) ({manifest.product_id})")
                 else:
                     print(f"    Manifests: {len(build.manifests)}")
                     

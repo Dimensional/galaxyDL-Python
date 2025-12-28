@@ -185,44 +185,47 @@ class ProductMetadata:
 @dataclass
 class ManifestEntry:
     """
-    Manifest entry within a build (48 bytes).
+    Manifest entry within a build (56 bytes).
     
-    Describes a single depot manifest with language flags.
+    Describes a single depot manifest with language flags and product ID.
     """
     depot_id: bytes  # 16-byte binary MD5
     offset: int  # uint64 (relative to BuildFilesOffset)
     size: int  # uint64
     languages1: int  # uint64 (bits 0-63)
     languages2: int  # uint64 (bits 64-127)
+    product_id: int  # uint64 (product/DLC ID this depot belongs to)
     
     def to_bytes(self) -> bytes:
-        """Serialize to 48-byte binary format."""
+        """Serialize to 56-byte binary format."""
         return struct.pack(
-            "<16sQQQQ",
+            "<16sQQQQQ",
             self.depot_id,
             self.offset,
             self.size,
             self.languages1,
             self.languages2,
+            self.product_id,
         )
     
     @classmethod
     def from_bytes(cls, data: bytes) -> "ManifestEntry":
-        """Deserialize from 48-byte binary format."""
-        unpacked = struct.unpack("<16sQQQQ", data[:48])
+        """Deserialize from 56-byte binary format."""
+        unpacked = struct.unpack("<16sQQQQQ", data[:56])
         return cls(
             depot_id=unpacked[0],
             offset=unpacked[1],
             size=unpacked[2],
             languages1=unpacked[3],
             languages2=unpacked[4],
+            product_id=unpacked[5],
         )
 
 
 @dataclass
 class BuildMetadata:
     """
-    Build metadata entry (48 bytes base + 48 bytes per manifest).
+    Build metadata entry (48 bytes base + 56 bytes per manifest).
     
     Describes a single build including repository and associated manifests.
     """
@@ -234,7 +237,7 @@ class BuildMetadata:
     manifests: List[ManifestEntry] = field(default_factory=list)
     
     def to_bytes(self) -> bytes:
-        """Serialize to binary format (48 + 48*n bytes)."""
+        """Serialize to binary format (48 + 56*n bytes)."""
         manifest_count = len(self.manifests)
         
         # Build header (48 bytes)
@@ -267,13 +270,13 @@ class BuildMetadata:
         repository_size = unpacked[4]
         manifest_count = unpacked[5]
         
-        # Parse manifests
+        # Parse manifests (56 bytes each)
         manifests = []
         offset = 48
         for _ in range(manifest_count):
-            manifest = ManifestEntry.from_bytes(data[offset:offset+48])
+            manifest = ManifestEntry.from_bytes(data[offset:offset+56])
             manifests.append(manifest)
-            offset += 48
+            offset += 56
         
         return cls(
             build_id=build_id,
@@ -286,7 +289,7 @@ class BuildMetadata:
     
     def size(self) -> int:
         """Calculate total size in bytes."""
-        return 48 + 48 * len(self.manifests)
+        return 48 + 56 * len(self.manifests)
 
 
 @dataclass
@@ -370,6 +373,7 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
             # Collect all depot manifests (including offlineDepot if present)
             depot_ids = []
             depot_languages = {}  # Map depot_id -> language list
+            depot_product_ids = {}  # Map depot_id -> product_id
             offline_depot_id = None
             
             # Add offlineDepot if present (tracked separately for skipping chunks)
@@ -378,6 +382,7 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
                 offline_depot_id = offline_depot.get('manifest')
                 depot_ids.append(offline_depot_id)
                 depot_languages[offline_depot_id] = offline_depot.get('languages', [])
+                depot_product_ids[offline_depot_id] = int(offline_depot.get('productId', product_id))
             
             # Add regular depots
             for depot in json_data.get('depots', []):
@@ -385,6 +390,7 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
                     manifest_id = depot.get('manifest')
                     depot_ids.append(manifest_id)
                     depot_languages[manifest_id] = depot.get('languages', [])
+                    depot_product_ids[manifest_id] = int(depot.get('productId', product_id))
             
             # Extract product name from products array
             product_name = 'Unknown'
@@ -400,6 +406,7 @@ def identify_and_parse_meta_file(data: bytes) -> Optional[dict]:
                 'depotIds': depot_ids,
                 'offlineDepotId': offline_depot_id,  # Track which depot is offline
                 'depotLanguages': depot_languages,  # Map depot_id -> language list
+                'depotProductIds': depot_product_ids,  # Map depot_id -> product_id
             }
         else:
             # It's a depot manifest, return None (pack doesn't need these)
@@ -668,5 +675,5 @@ def calculate_metadata_size(build_count: int, manifest_counts: List[int]) -> int
     Returns:
         Total size in bytes (aligned to 64 bytes)
     """
-    total = sum(48 + 48 * count for count in manifest_counts)
+    total = sum(48 + 56 * count for count in manifest_counts)
     return align_to_boundary(total)

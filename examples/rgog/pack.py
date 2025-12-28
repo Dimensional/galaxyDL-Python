@@ -32,6 +32,7 @@ class RepositoryInfo:
     depot_ids: List[str]
     offline_depot_id: Optional[str]
     depot_languages: Dict[str, List[str]]  # Map depot_id -> language list
+    depot_product_ids: Dict[str, int]  # Map depot_id -> product_id
     file_size: int
 
 
@@ -139,6 +140,7 @@ def scan_repositories(meta_dir: Path) -> List[RepositoryInfo]:
                     depot_ids=repo_data['depotIds'],
                     offline_depot_id=repo_data.get('offlineDepotId'),
                     depot_languages=repo_data.get('depotLanguages', {}),
+                    depot_product_ids=repo_data.get('depotProductIds', {}),
                     file_size=len(compressed_data),
                 ))
                 
@@ -355,6 +357,9 @@ def write_part_0(
                 lang_list = repo.depot_languages.get(depot_id, [])
                 languages1, languages2 = languages_to_bitflags(lang_list)
                 
+                # Get product ID for this depot (defaults to base product ID)
+                depot_product_id = repo.depot_product_ids.get(depot_id, repo.product_id)
+                
                 # Create placeholder ManifestEntry (will update with actual offsets later)
                 manifest_entry = ManifestEntry(
                     depot_id=md5_to_bytes(depot_id),
@@ -362,6 +367,7 @@ def write_part_0(
                     size=0,    # Placeholder
                     languages1=languages1,
                     languages2=languages2,
+                    product_id=depot_product_id,
                 )
                 build_meta.manifests.append(manifest_entry)
             
@@ -462,7 +468,6 @@ def write_part_0(
                 chunk_metadata_list[i].offset = offset
                 chunk_metadata_list[i].size = len(data)
         
-        f.write(get_padding(f.tell()))
         chunk_files_size = f.tell() - chunk_files_offset
         
         # Step 8: Update Chunk Metadata with actual offsets
@@ -549,7 +554,6 @@ def write_part_n(
             chunk_metadata_list[i].offset = offset
             chunk_metadata_list[i].size = len(data)
         
-        f.write(get_padding(f.tell()))
         chunk_files_size = f.tell() - chunk_files_offset
         
         # Step 4: Update Chunk Metadata

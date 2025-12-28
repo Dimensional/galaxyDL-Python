@@ -80,10 +80,11 @@ Offset  Size  Field                Description
 
 **Multi-part Design:**
 - **Part 0**: Product Metadata + Build Files + Build Metadata + Chunk Files + Chunk Metadata
-- **Part 1+**: Chunk Files + Chunk Metadata only
-- Offsets/sizes = 0 for sections not present in part
+- **Part 1+**: Product Metadata + Chunk Files + Chunk Metadata
+- Offsets/sizes = 0 for sections not present in part (Build Files and Build Metadata only in Part 0)
 - TotalParts tells you upfront how many files to expect
 - Type field must match across all parts of the same archive
+- Product Metadata duplicated in all parts for easy identification
 
 **Example (Single-part archive, TUNIC with metadata-first layout):**
 ```
@@ -137,6 +138,8 @@ Padding:          0x00 0x00 0x00 (3 bytes, to reach 8-byte alignment)
 Total size:       8 + 4 + 8 = 20 bytes → padded to 64 bytes
 ```
 
+**Section padding:** The entire Product Metadata section is padded to the next **64-byte boundary** (typically 64 bytes total).
+
 **Binary Layout:**
 ```
 Offset  Value (hex)              Field
@@ -173,6 +176,7 @@ Offset  Size  Field              Description
 44      2     ManifestCount      uint16 (max 65535 manifests)
 46      2     Reserved           0x00
 48      ?     Manifests[]        Array of manifest entries
+?       ?     Padding            Pad to 64-byte boundary (0x00)
 ```
 
 **Manifest Entry (per manifest):**
@@ -184,12 +188,18 @@ Offset  Size  Field           Description
 24      8     Size            uint64 (compressed size)
 32      8     Languages1      uint64 bit flags (bits 0-63)
 40      8     Languages2      uint64 bit flags (bits 64-127)
+48      8     ProductId       uint64 (GOG product ID for this depot - base game or DLC)
 ```
 
 **Total entry sizes:**
 - Build entry base: 48 bytes
-- Per manifest: 48 bytes
-- Example (1 manifest): 48 + 48 = 96 bytes per build
+- Per manifest: 56 bytes
+- Example (1 manifest): 48 + 56 = 104 bytes per build
+
+**Padding:**
+- Individual build entries are written consecutively **without padding** (no alignment requirement within the section)
+- The entire Build Metadata section is padded to the next **64-byte boundary** before the next section begins
+- Example: 3 builds totaling 308 bytes → padded to 320 bytes (5 × 64)
 
 **OS Codes:**
 - 0: Null/unspecified (allows future expansion)
@@ -381,21 +391,29 @@ Offset  Value (hex)              Field
 44      03 00                    ManifestCount: 3 (uint16)
 46      00 00                    Reserved
 
-[Manifest[0] - 48 bytes]
+[Manifest[0] - 56 bytes]
 48      D4 C3 53 09 D1 C7 B9 19  DepotId: binary MD5 (first 8 bytes)
 56      F5 4C 4A 41 0C E3 1C 72  (last 8 bytes)
 64      00 60 00 00 00 00 00 00  Offset: 24576 (little-endian)
 72      00 20 00 00 00 00 00 00  Size: 8192 (little-endian)
 80      01 00 00 00 00 00 00 00  Languages1: 0x0000000000000001 (en-US)
 88      00 00 00 00 00 00 00 00  Languages2: 0x0000000000000000
+96      39 42 50 66 00 00 00 00  ProductId: 1716751737 (base game)
 
-[Manifest[1] - 48 bytes]
-96      DB FE 3D 05 C7 CE 02 A2  DepotId: binary MD5 ...
-...     (continues for remaining 40 bytes)
+[Manifest[1] - 56 bytes]
+104     DB FE 3D 05 C7 CE 02 A2  DepotId: binary MD5 ...
+...     (continues for remaining 48 bytes)
 
-[Manifest[2] - 48 bytes]
-144     E6 A4 5C 8F 3D 9E 7B 2A  DepotId: binary MD5 ...
-...     (continues for remaining 40 bytes)
+[Manifest[2] - 56 bytes]
+160     E6 A4 5C 8F 3D 9E 7B 2A  DepotId: binary MD5 ...
+...     (continues for remaining 48 bytes)
+
+[Padding - 40 bytes]
+216     00 00 00 00 00 00 00 00  Padding to 64-byte boundary
+224     00 00 00 00 00 00 00 00  (Build total: 216 bytes → 256 bytes)
+232     00 00 00 00 00 00 00 00
+240     00 00 00 00 00 00 00 00
+248     00 00 00 00 00 00 00 00
 ```
 
 **Sorting:** Builds sorted by BuildId (numeric ascending)
@@ -419,6 +437,8 @@ Repository and manifest files, zlib-compressed as downloaded from GOG.
 2. All manifests (sorted by depotId/filename alphanumeric)
 
 **No padding between files** - written consecutively.
+
+**Section padding:** The entire Build Files section is padded to the next **64-byte boundary** before Chunk Metadata begins.
 
 **Rationale:**
 - Grouped by type for cleaner organization
@@ -477,6 +497,14 @@ Offset  Value (hex)              Field
 24      E4 D4 00 00 00 00 00 00  Size: 54500 (little-endian uint64)
 ```
 
+**Padding Example:**
+```
+If Chunk Metadata has 1418 chunks:
+  Total size: 1418 × 32 = 45,376 bytes
+  Next 64-byte boundary: 45,376 → 45,440 bytes (709 × 64)
+  Padding: 64 bytes (0x00)
+```
+
 ---
 
 ## 6. Chunk Files (Zlib)
@@ -486,6 +514,8 @@ Chunk files, zlib-compressed as downloaded from GOG.
 **Storage Order:** Sorted by chunk filename (compressedMd5) alphanumeric
 
 **No padding between files** - written consecutively.
+
+**Section padding:** The Chunk Files section is the last section in the file. No padding is added after this section (file ends immediately after the last chunk).
 
 ---
 
