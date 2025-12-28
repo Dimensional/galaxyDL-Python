@@ -68,16 +68,16 @@ def execute(args):
                     # Parse: build_id (8) + os (1) + padding (3) + repository_id (16) + offset (8) + size (8) + manifest_count (2) + padding (2)
                     build_id, os, repo_md5, repo_offset, repo_size, manifest_count = struct.unpack('<QB3x16sQQH2x', build_header)
                     
-                    # Read manifest entries (48 bytes each)
+                    # Read manifest entries (56 bytes each)
                     manifests = []
                     for j in range(manifest_count):
-                        manifest_data = f.read(48)
-                        if len(manifest_data) != 48:
+                        manifest_data = f.read(56)
+                        if len(manifest_data) != 56:
                             print(f"✗ Build {i + 1}: Failed to read manifest {j + 1}")
                             errors += 1
                             continue
-                        # Parse: depot_id (16) + offset (8) + size (8) + languages1 (8) + languages2 (8)
-                        depot_id, depot_offset, depot_size, lang1, lang2 = struct.unpack('<16sQQQQ', manifest_data)
+                        # Parse: depot_id (16) + offset (8) + size (8) + languages1 (8) + languages2 (8) + product_id (8)
+                        depot_id, depot_offset, depot_size, lang1, lang2, product_id = struct.unpack('<16sQQQQQ', manifest_data)
                         manifests.append((depot_id, depot_offset, depot_size))
                     
                     # Read repository file
