@@ -565,7 +565,7 @@ When splitting archives across multiple files:
 4. Each part tracks only its own chunks in local metadata
 5. Final file sizes may exceed limit slightly due to metadata + alignment padding
 
-### Part 0 Structure (`game.rgog`)
+### Part 0 Structure (`game_1.rgog`)
 Contains **ALL** metadata and build files, plus initial chunks:
 ```
 [Header: PartNumber=0, TotalParts=4, TotalBuildCount=2, TotalChunkCount=1523, LocalChunkCount=500]
@@ -576,7 +576,7 @@ Contains **ALL** metadata and build files, plus initial chunks:
 [Chunk Metadata - binary, ALL 1523 chunks with part# assignments]
 ```
 
-### Part 1+ Structure (`game.rgog.1`, `game.rgog.2`, etc.)
+### Part 1+ Structure (`game_2.rgog`, `game_3.rgog`, etc.)
 Contains **ONLY** chunk storage (no metadata duplication):
 ```
 [Header: PartNumber=N, TotalParts=4, TotalBuildCount=2, TotalChunkCount=1523, LocalChunkCount=512]
@@ -634,8 +634,8 @@ Offset  Value (hex)              Field
 2. Load Product Metadata and Build Metadata from Part 0
 3. For each chunk needed:
    - Read Chunk Metadata from appropriate part to find offset
-   - If PartNumber in chunk entry = 0: read from Part 0 Chunk Files
-   - If PartNumber > 0: open `game.rgog.{PartNumber}`, read from that part's Chunk Files
+   - If PartNumber in chunk entry = 0: read from Part 0 Chunk Files (game_1.rgog)
+   - If PartNumber > 0: open `game_{PartNumber}.rgog`, read from that part's Chunk Files
 
 ---
 
@@ -674,15 +674,16 @@ Offset  Value (hex)              Field
 3. For each file:
    - Decompress and parse JSON (minimal read)
    - If has `productId` and `buildId` → Repository
-     - Extract: `{filename, buildId, productId, os}`
+     - Extract: `{filename, buildId, productId, productName, os, depotIds[], depotLanguages{}, depotProductIds{}}`
    - Else → Manifest
-     - Extract: `{filename, depotId, languages[]}`
+     - Extract: `{filename, depotId}` (depot metadata comes from Repository)
 4. Sort repositories by filename
 5. Sort manifests by filename
 6. Group manifests by build (match depotIds from repository metadata)
+7. Cross-reference manifests with repository data to get languages and product IDs for each depot
 
 **Step 2: Calculate Part Assignments**
-1. Scan `chunks/` folder, collect all chunk files
+1. Scan `store/` folder, collect all chunk files
 2. Sort chunk filenames alphanumerically
 3. Get file size for each chunk
 4. Calculate metadata sizes:
@@ -830,7 +831,7 @@ rgog pack TUNIC/v2/ -o tunic.rgog --max-part-size 10GB
 
 # List contents
 rgog list tunic.rgog                    # Quick: show product + builds
-rgog list tunic.rgog --detailed         # Decompress repos for versions/dates
+rgog list tunic.rgog --detailed         # Decompress repos for versions/metadata
 rgog list tunic.rgog --build 1716751705 # Show specific build info
 
 # Extract
@@ -869,9 +870,9 @@ rgog info tunic.rgog  # Stats, deduplication, part count
 ## Example: Multi-part Archive
 
 ```
-tunic.rgog          (10.5 GB)  Part 0: Product + builds + 500 chunks
-tunic.rgog.1        (10.0 GB)  Part 1: 512 chunks only
-tunic.rgog.2        (10.0 GB)  Part 2: 511 chunks only
+tunic_1.rgog        (10.5 GB)  Part 0: Product + builds + 500 chunks
+tunic_2.rgog        (10.0 GB)  Part 1: 512 chunks only
+tunic_3.rgog        (10.0 GB)  Part 2: 511 chunks only
 ```
 
 **Part 0 breakdown:**
@@ -901,8 +902,11 @@ Chunk Metadata:      80 KB (ALL 1523 chunks catalog)
 RGOG v2.1 will introduce specialized patch archive functionality. While the Type field (offset 6) is already defined in v2.0 headers to distinguish Base Build (0x01) from Patch Collection (0x02) archives, the full patch metadata structures and workflows will be formalized in v2.1.
 
 **File Naming Convention**
-- Base builds: `game.rgog`, `game.rgog.1`, etc.
-- Patch archives: `game_patches.rgog`, `game_patches.rgog.1`, etc.
+- Single-file archives: `game.rgog`
+- Multi-part base builds: `game_1.rgog`, `game_2.rgog`, `game_3.rgog`, etc.
+  - File numbers are 1-based (first file is _1.rgog)
+  - PartNumber in header is 0-based (Part 0 is in _1.rgog)
+- Multi-part patch archives: `game_patches_1.rgog`, `game_patches_2.rgog`, etc.
 
 **Type Field (Already Implemented in v2.0)**
 
