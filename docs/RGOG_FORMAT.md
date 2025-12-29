@@ -689,7 +689,7 @@ Offset  Value (hex)              Field
 4. Calculate metadata sizes:
    - Header: 128 bytes
    - Product Metadata: ~64 bytes (aligned)
-   - Build Metadata: (48 + 48×manifestCount) × buildCount
+   - Build Metadata: (48 + 56×manifestCount) × buildCount
    - Chunk Metadata per chunk: 32 bytes
 5. Walk chunks in sorted order:
    - `partSize = headerSize + productMetadataSize + buildMetadataSize`
