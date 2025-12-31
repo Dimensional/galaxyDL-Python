@@ -72,6 +72,10 @@ def main():
                              help='Quick verify (check structure only, skip MD5)')
     verify_parser.add_argument('--detailed', action='store_true',
                              help='Show detailed verification of each file')
+    verify_parser.add_argument('--full', action='store_true',
+                             help='Full verify (decompress chunks and verify both compressed and decompressed MD5)')
+    verify_parser.add_argument('--threads', type=int, default=0,
+                             help='Number of threads for verification (0=auto, default: CPU count)')
     
     # Info command
     info_parser = subparsers.add_parser('info', help='Show archive information')

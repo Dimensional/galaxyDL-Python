@@ -289,7 +289,13 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
                 return ('downloaded', chunk_path, chunk_type)
                 
             except (ConnectionResetError, ConnectionAbortedError, 
-                    ConnectionError, TimeoutError) as e:
+                    ConnectionError, TimeoutError, OSError) as e:
+                # Check if it's a connection-related OSError (e.g., errno 10054 on Windows)
+                if isinstance(e, OSError) and e.errno not in [10053, 10054, 104]:
+                    # Not a connection termination error, don't retry
+                    last_error = e
+                    break
+                    
                 last_error = e
                 # Transient network errors - retry
                 if attempt < max_retries - 1:

@@ -624,7 +624,7 @@ Offset  Value (hex)              Field
 
 **Design Rationale:**
 - **No duplication:** Metadata and build files appear ONLY in Part 0
-- **Part 0 required:** Must have Part 0 to know archive contents
+- **Part 0 required:** Must have Part 0 to know archive builds
 - **Self-contained verification:** Each part can verify its own chunks via metadata
 - **Deterministic splitting:** Chunks assigned to parts in sorted order
 - **TotalParts known upfront:** Header tells you how many files to expect
