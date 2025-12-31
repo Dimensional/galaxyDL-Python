@@ -7,6 +7,7 @@ RGOG (Reproducible GOG) archives following the RGOG Format Specification v2.0.
 
 Usage:
     rgog.py pack <input_dir> -o <output.rgog> [--max-part-size SIZE]
+    rgog.py unpack <archive.rgog> -o <output_dir> [--debug] [--chunks-only]
     rgog.py list <archive.rgog> [--detailed] [--build BUILD_ID]
     rgog.py extract <archive.rgog> -o <output_dir> [--build BUILD_ID] [--chunks-only]
     rgog.py verify <archive.rgog> [--build BUILD_ID]
@@ -14,6 +15,7 @@ Usage:
 
 Commands:
     pack      Create an RGOG archive from a GOG v2 directory structure
+    unpack    Unpack an RGOG archive to recreate the original GOG v2 directory structure
     list      List contents of an RGOG archive
     extract   Extract builds and/or chunks from an RGOG archive
     verify    Verify MD5 checksums of all data in an RGOG archive
@@ -25,7 +27,7 @@ import sys
 from pathlib import Path
 
 # Import subcommands
-from rgog import pack, list as list_cmd, extract, verify, info
+from rgog import pack, unpack, list as list_cmd, extract, verify, info
 
 
 def main():
@@ -46,6 +48,17 @@ def main():
     pack_parser.add_argument('--type', type=str, choices=['base', 'patch'], default='base',
                            help='Archive type. Default: base')
     pack_parser.add_argument('--build', type=int, help='Pack only specific build ID')
+    
+    # Unpack command
+    unpack_parser = subparsers.add_parser('unpack', help='Unpack RGOG archive to original structure')
+    unpack_parser.add_argument('archive', type=Path, help='RGOG archive file')
+    unpack_parser.add_argument('-o', '--output', type=Path, required=True, help='Output directory')
+    unpack_parser.add_argument('--debug', action='store_true',
+                              help='Create human-readable JSON debug copies of build records')
+    unpack_parser.add_argument('--chunks-only', action='store_true',
+                              help='Unpack only chunk files (skip build metadata)')
+    unpack_parser.add_argument('--threads', type=int, default=0,
+                              help='Number of threads for extraction (0=auto, default: CPU count)')
     
     # List command
     list_parser = subparsers.add_parser('list', help='List archive contents')
@@ -93,6 +106,8 @@ def main():
     try:
         if args.command == 'pack':
             return pack.execute(args)
+        elif args.command == 'unpack':
+            return unpack.execute(args)
         elif args.command == 'list':
             return list_cmd.execute(args)
         elif args.command == 'extract':

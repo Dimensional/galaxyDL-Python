@@ -5,8 +5,9 @@ A command-line tool for creating, managing, and extracting RGOG (Reproducible GO
 ## Features
 
 - **Pack**: Create deterministic RGOG archives from GOG Galaxy v2 directory structures
+- **Unpack**: Extract RGOG archives back to the original GOG v2 directory structure
 - **List**: View archive contents and build information
-- **Extract**: Extract builds and chunks from archives
+- **Extract**: Extract and reassemble chunks into installable game files
 - **Verify**: Validate archive integrity and checksums
 - **Info**: Display detailed statistics about archives
 
@@ -30,6 +31,28 @@ With custom part size:
 ```bash
 python rgog.py pack TUNIC/v2/ -o tunic.rgog --max-part-size 4GB
 ```
+
+### Unpack an Archive
+
+Unpack an RGOG archive back to GOG v2 structure:
+
+```bash
+python rgog.py unpack tunic.rgog -o TUNIC/v2/
+```
+
+Unpack with debug files (human-readable JSON):
+
+```bash
+python rgog.py unpack tunic.rgog -o TUNIC/v2/ --debug
+```
+
+Unpack only chunks (skip metadata):
+
+```bash
+python rgog.py unpack tunic.rgog -o chunks_only/ --chunks-only
+```
+
+**Note**: The `unpack` command recreates the original GOG v2 directory structure (meta/, store/). This is different from `extract`, which reassembles chunks into final game files (exes, dlls, etc.).
 
 ### List Archive Contents
 
@@ -141,10 +164,12 @@ RGOG archives follow a metadata-first layout optimized for both creation and ext
 
 ## Input Directory Structure
 
-The tool expects a GOG Galaxy v2 directory structure:
-
-```
-TUNIC/v2/
+The toolunpack.py            # Unpack command implementation
+    ├── list.py              # List command implementation
+    ├── extract.py           # Extract command implementation
+    ├── verify.py            # Verify command implementation
+    ├── info.py              # Info command implementation
+    └── UNPACK_GUIDE.md      # Detailed unpack docu
 ├── meta/
 │   ├── <hash1>              # Repository files (zlib compressed JSON)
 │   ├── <hash2>              # Manifest files (zlib compressed JSON)

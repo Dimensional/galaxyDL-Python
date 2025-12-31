@@ -10,6 +10,7 @@ __version__ = "2.0.0"
 # Import submodules to make them available
 from . import common
 from . import pack
+from . import unpack
 from . import list
 from . import extract
 from . import verify
@@ -18,6 +19,7 @@ from . import info
 __all__ = [
     'common',
     'pack',
+    'unpack',
     'list',
     'extract',
     'verify',

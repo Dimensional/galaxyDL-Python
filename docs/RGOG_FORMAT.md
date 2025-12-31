@@ -4,6 +4,21 @@
 ### Overview
 The RGOG (Reproducible GOG) format is a deterministic archive format for packaging GOG Galaxy v2 build data. Identical inputs guarantee identical outputs with matching checksums, regardless of who creates the archive or when.
 
+### Commands Overview
+
+The RGOG toolset provides several commands for working with archives:
+
+- **pack**: Creates an RGOG archive from GOG Galaxy v2 directory structure (meta/, store/)
+- **unpack**: Extracts RGOG archive back to GOG Galaxy v2 directory structure (inverse of pack)
+- **extract**: Reassembles chunk files into final installable game files (exes, dlls, etc.)
+- **list**: Views archive contents and build information
+- **verify**: Validates archive integrity and checksums
+- **info**: Displays statistics about archives
+
+**Important Distinction:**
+- `unpack` recreates the GOG v2 file structure (compressed repositories, manifests, and chunks)
+- `extract` decompresses and reassembles chunks into the actual game files for installation
+
 ### Design Goals
 1. **Determinism**: Same inputs → same outputs (identical checksums)
 2. **Binary Metadata**: Compact binary structures for all metadata
