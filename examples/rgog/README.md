@@ -148,11 +148,29 @@ RGOG archives follow a metadata-first layout optimized for both creation and ext
 ├─────────────────────────────────────────┤
 │ Build Files (Zlib)                      │  Repositories + Manifests
 ├─────────────────────────────────────────┤
-│ Chunk Metadata (Binary)                 │  Catalog of chunks
+│ Chunk Metadata (Binary)                 │  Catalog of chunks (40 bytes each)
 ├─────────────────────────────────────────┤
 │ Chunk Files (Zlib)                      │  Chunk data
 └─────────────────────────────────────────┘
 ```
+
+### Chunk Metadata Structure
+
+Each chunk entry is exactly 40 bytes:
+
+```
+┌────────────────────────────────────┐
+│ compressed_md5 (16 bytes)          │  MD5 hash of compressed chunk
+├────────────────────────────────────┤
+│ offset (8 bytes, uint64_t)         │  Byte offset in chunk data section
+├────────────────────────────────────┤
+│ size (8 bytes, uint64_t)           │  Compressed chunk size
+├────────────────────────────────────┤
+│ product_id (8 bytes, uint64_t)     │  GOG product ID
+└────────────────────────────────────┘
+```
+
+All multi-byte integers are stored in little-endian format.
 
 ### Key Features
 
@@ -212,7 +230,11 @@ The `common.py` module provides all binary structure definitions:
 - `RGOGHeader`: 128-byte archive header
 - `ProductMetadata`: Product information
 - `BuildMetadata`: Build and manifest metadata
-- `ChunkMetadata`: Chunk catalog entries
+- `ChunkMetadata`: 40-byte chunk catalog entries
+  - compressed_md5 (16 bytes): MD5 hash of compressed chunk
+  - offset (8 bytes): Byte offset in chunk data section
+  - size (8 bytes): Compressed chunk size
+  - product_id (8 bytes): GOG product ID this chunk belongs to
 
 All classes include:
 - Comprehensive docstrings
