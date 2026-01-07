@@ -197,7 +197,8 @@ game_directory/
 │           └── ...
 ```
 
-**Note**: The store directory must contain product_id subdirectories (numeric directory names).
+**Note**: The store directory must contain product_id subdirectories (numeric directory names),
+as chunks are stored per product ID on the CDN. Less risk of file collision.
 This structure is created automatically by the `archive_game.py` download script.
 
 ## Code Structure
