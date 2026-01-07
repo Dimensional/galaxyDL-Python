@@ -17,8 +17,9 @@ from threading import Lock
 
 from .common import (
     RGOGHeader, ProductMetadata, BuildMetadata, ChunkMetadata,
-    SECTION_ALIGNMENT,
+    SECTION_ALIGNMENT, CHUNK_METADATA_SIZE,
     bytes_to_md5, align_to_boundary,
+    CROSS_MARK
 )
 
 
@@ -118,11 +119,11 @@ def read_chunk_metadata_list(f, header: RGOGHeader) -> List[ChunkMetadata]:
     chunks = []
     f.seek(header.chunk_metadata_offset)
     
-    # Each chunk metadata is 32 bytes
-    chunk_count = header.chunk_metadata_size // 32
+    # Each chunk metadata is CHUNK_METADATA_SIZE bytes
+    chunk_count = header.chunk_metadata_size // CHUNK_METADATA_SIZE
     for _ in range(chunk_count):
-        chunk_data = f.read(32)
-        if len(chunk_data) < 32:
+        chunk_data = f.read(CHUNK_METADATA_SIZE)
+        if len(chunk_data) < CHUNK_METADATA_SIZE:
             break
         chunk_meta = ChunkMetadata.from_bytes(chunk_data)
         chunks.append(chunk_meta)
@@ -138,7 +139,8 @@ def unpack_build_files(
     create_debug: bool = True,
 ):
     """
-    Unpack repository files and depot manifests to meta/ directory.
+    Unpack repository files and depot manifests to meta/ directory with nested structure.
+    Structure: meta/XX/YY/hash (matching original GOG v2 format)
     Optionally create human-readable debug copies.
     """
     meta_dir = output_dir / 'meta'
@@ -153,7 +155,12 @@ def unpack_build_files(
     for build in builds:
         # Extract repository file
         repo_filename = bytes_to_md5(build.repository_id)
-        repo_path = meta_dir / repo_filename
+        
+        # Create nested directory structure: meta/XX/YY/hash
+        subdir1 = repo_filename[:2]
+        subdir2 = repo_filename[2:4]
+        repo_path = meta_dir / subdir1 / subdir2 / repo_filename
+        repo_path.parent.mkdir(parents=True, exist_ok=True)
         
         f.seek(header.build_files_offset + build.repository_offset)
         repo_data = f.read(build.repository_size)
@@ -164,22 +171,32 @@ def unpack_build_files(
         
         print(f"  Extracted repository: {repo_filename} ({build.repository_size} bytes)")
         
-        # Create human-readable debug copy if requested
+        # Parse repository to identify offlineDepot manifest
+        offline_depot_manifest = None
         if create_debug:
             try:
                 decompressed = zlib.decompress(repo_data)
                 # Parse and pretty-print JSON for readability
                 json_data = json.loads(decompressed)
-                debug_path = debug_dir / f"{repo_filename}_repository.json"
+                debug_path = debug_dir / f"{repo_filename}_depot.json"
                 with open(debug_path, 'w', encoding='utf-8') as df:
                     json.dump(json_data, df, indent=2, ensure_ascii=False)
+                
+                # Extract offlineDepot manifest ID if present
+                if 'offlineDepot' in json_data and 'manifest' in json_data['offlineDepot']:
+                    offline_depot_manifest = json_data['offlineDepot']['manifest']
             except Exception as e:
                 print(f"    Warning: Failed to create debug copy: {e}")
         
         # Extract depot manifests for this build
         for manifest in build.manifests:
             depot_filename = bytes_to_md5(manifest.depot_id)
-            depot_path = meta_dir / depot_filename
+            
+            # Create nested directory structure: meta/XX/YY/hash
+            subdir1 = depot_filename[:2]
+            subdir2 = depot_filename[2:4]
+            depot_path = meta_dir / subdir1 / subdir2 / depot_filename
+            depot_path.parent.mkdir(parents=True, exist_ok=True)
             
             f.seek(header.build_files_offset + manifest.offset)
             depot_data = f.read(manifest.size)
@@ -196,7 +213,13 @@ def unpack_build_files(
                     decompressed = zlib.decompress(depot_data)
                     # Parse and pretty-print JSON for readability
                     json_data = json.loads(decompressed)
-                    debug_path = debug_dir / f"{depot_filename}_manifest.json"
+                    
+                    # Determine manifest type based on repository offlineDepot field
+                    manifest_type = "manifest"
+                    if offline_depot_manifest and depot_filename == offline_depot_manifest:
+                        manifest_type = "offlineDepot_manifest"
+                    
+                    debug_path = debug_dir / f"{depot_filename}_{manifest_type}.json"
                     with open(debug_path, 'w', encoding='utf-8') as df:
                         json.dump(json_data, df, indent=2, ensure_ascii=False)
                 except Exception as e:
@@ -224,11 +247,13 @@ def unpack_chunk_files(
     for i, chunk in enumerate(chunks, 1):
         chunk_id = bytes_to_md5(chunk.compressed_md5)
         
-        # Create nested directory structure path
-        # Example: 0030af763e1a09ab307d84a24d0066a2 -> store/00/30/0030af763e1a09ab307d84a24d0066a2
+        # Create nested directory structure path with product_id
+        # Example: product 1744110647, hash 0030af763e1a09ab307d84a24d0066a2
+        # -> store/1744110647/00/30/0030af763e1a09ab307d84a24d0066a2
+        product_id_str = str(chunk.product_id)
         subdir1 = chunk_id[:2]
         subdir2 = chunk_id[2:4]
-        chunk_path = store_dir / subdir1 / subdir2 / chunk_id
+        chunk_path = store_dir / product_id_str / subdir1 / subdir2 / chunk_id
         
         # Offset is absolute
         absolute_offset = header.chunk_files_offset + chunk.offset
@@ -257,7 +282,7 @@ def unpack_chunk_files(
                     stats.add_extracted()
                 else:
                     stats.add_error()
-                    print(f"  ✗ Chunk {chunk_index}: {error}")
+                    print(f"  {CROSS_MARK} Chunk {chunk_index}: {error}")
                 
                 # Update progress every 100 chunks
                 extracted, errors = stats.get_stats()
@@ -275,7 +300,7 @@ def unpack_chunk_files(
                 stats.add_extracted()
             else:
                 stats.add_error()
-                print(f"  ✗ Chunk {chunk_index}: {error}")
+                print(f"  {CROSS_MARK} Chunk {chunk_index}: {error}")
             
             if i % 100 == 0 or i == len(tasks):
                 print(f"  Progress: {i}/{len(tasks)} chunks extracted")

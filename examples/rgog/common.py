@@ -5,12 +5,30 @@ This module contains all binary structure definitions, helper functions,
 and shared utilities used across RGOG pack/unpack operations.
 """
 
+import sys
+import codecs
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 import zlib
 import json
+
+
+# Configure UTF-8 encoding for stdout to handle unicode characters in PowerShell
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python < 3.7
+        import io
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+
+# Use ASCII-safe characters if not a terminal (for better PowerShell compatibility)
+USE_UNICODE = sys.stdout.isatty()
+CHECK_MARK = '✓' if USE_UNICODE else '[OK]'
+CROSS_MARK = '✗' if USE_UNICODE else '[FAIL]'
+INFO_MARK = 'ℹ' if USE_UNICODE else '[INFO]'
 
 
 # Constants
@@ -20,6 +38,7 @@ ARCHIVE_TYPE_BASE = 0x01
 ARCHIVE_TYPE_PATCH = 0x02
 SECTION_ALIGNMENT = 64
 DEFAULT_PART_SIZE = 2 * 1024 * 1024 * 1024  # 2 GiB
+CHUNK_METADATA_SIZE = 40  # ChunkMetadata structure size (16 + 8 + 8 + 8 bytes)
 
 # OS Codes
 OS_NULL = 0
@@ -295,26 +314,37 @@ class BuildMetadata:
 @dataclass
 class ChunkMetadata:
     """
-    Chunk metadata entry (32 bytes).
+    Chunk metadata entry (40 bytes).
     
-    Describes a single chunk file with MD5 checksum and location.
+    Describes a single chunk file with MD5 checksum, location, and product ID.
+    Product ID indicates which product this chunk belongs to, matching the
+    store/{product_id}/XX/YY/hash directory structure.
+    
+    Binary format (little-endian):
+        compressed_md5: 16 bytes (MD5 hash)
+        offset:          8 bytes (uint64, relative to chunk_files_offset)
+        size:            8 bytes (uint64, compressed size)
+        product_id:      8 bytes (uint64, GOG product ID)
+        Total:          40 bytes
     """
     compressed_md5: bytes  # 16-byte binary MD5
     offset: int  # uint64 (relative to ChunkFilesOffset in this part)
     size: int  # uint64
+    product_id: int  # uint64 (product ID from GOG)
     
     def to_bytes(self) -> bytes:
-        """Serialize to 32-byte binary format."""
-        return struct.pack("<16sQQ", self.compressed_md5, self.offset, self.size)
+        """Serialize to 40-byte binary format."""
+        return struct.pack("<16sQQQ", self.compressed_md5, self.offset, self.size, self.product_id)
     
     @classmethod
     def from_bytes(cls, data: bytes) -> "ChunkMetadata":
-        """Deserialize from 32-byte binary format."""
-        unpacked = struct.unpack("<16sQQ", data[:32])
+        """Deserialize from 40-byte binary format."""
+        unpacked = struct.unpack("<16sQQQ", data[:40])
         return cls(
             compressed_md5=unpacked[0],
             offset=unpacked[1],
             size=unpacked[2],
+            product_id=unpacked[3],
         )
 
 

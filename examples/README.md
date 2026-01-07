@@ -53,6 +53,24 @@ Shows how to:
 python examples/delisted_builds.py
 ```
 
+---
+
+### [download_web.py](download_web.py)
+**Download offline installers and extras - NEW**
+
+Shows how to:
+- Get game details with download information
+- List available installers and extras
+- Download offline installers (.exe, .sh, .pkg)
+- Download bonus content (manuals, wallpapers, soundtracks)
+- Verify downloads with MD5 checksums
+
+```bash
+python examples/download_web.py 1207658924
+```
+
+See [../docs/WEB_DOWNLOADER.md](../docs/WEB_DOWNLOADER.md) for complete documentation.
+
 **Note:** Get build information from [gogdb.org](https://www.gogdb.org/) for delisted builds.
 
 ---

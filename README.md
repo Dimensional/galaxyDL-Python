@@ -2,10 +2,11 @@
 
 A specialized Python library for downloading GOG Galaxy files (chunks and binary blobs from Galaxy CDN).
 
-This library focuses exclusively on downloading from the Galaxy content delivery network, handling depot manifests, chunks, and binary files. It is built by referencing and combining best practices from both [heroic-gogdl](https://github.com/Heroic-Games-Launcher/heroic-gogdl) (Python) and [lgogdownloader](https://github.com/Sude-/lgogdownloader) (C++).
+This library focuses on downloading from the Galaxy content delivery network, handling depot manifests, chunks, and binary files. It also includes a simple Web Downloader for non-Galaxy files (offline installers, bonus content). Built by referencing and combining best practices from both [heroic-gogdl](https://github.com/Heroic-Games-Launcher/heroic-gogdl) (Python) and [lgogdownloader](https://github.com/Sude-/lgogdownloader) (C++).
 
 ## Features
 
+### Galaxy CDN Downloads
 - ✅ **Multi-threaded Downloads** - Both V1 and V2 use parallel chunk downloads
   - **V1**: Multi-threaded range requests for main.bin blob (legacy format)
   - **V2**: Multi-threaded 10MB chunk downloads (current format)
@@ -24,6 +25,14 @@ This library focuses exclusively on downloading from the Galaxy content delivery
 - ✅ **Automatic token refresh**
 - ✅ **Progress callback support** for frontends
 - ✅ **Error recovery** with retry logic
+
+### Web Downloader (NEW)
+- ✅ **Offline Installers** - Download standalone game installers (.exe, .sh, .pkg, .dmg)
+- ✅ **Bonus Content** - Download extras (manuals, wallpapers, soundtracks, artbooks)
+- ✅ **Patches & Language Packs** - Download non-Galaxy patches and language installers
+- ✅ **MD5 Verification** - Optional checksum verification via GOG's XML files
+- ✅ **Simple HTTP Downloads** - No complex depot logic, just direct file downloads
+- ✅ **Complete Archival** - Combine with Galaxy downloads for full game archival
 
 ## Installation
 
@@ -252,6 +261,8 @@ print(f"Auto-detected V{manifest.generation}")
 
 ### 5. Download Files
 
+**Galaxy CDN Downloads (game depot chunks):**
+
 ```python
 from galaxy_dl import GalaxyDownloader
 
@@ -269,6 +280,44 @@ def progress_callback(downloaded, total):
 for item in items:
     path = downloader.download_item(
         item,
+        output_dir="./downloads",
+        progress_callback=progress_callback
+    )
+    print(f"Downloaded: {path}")
+```
+
+**Web Downloads (simple HTTP files) - NEW:**
+
+```python
+from galaxy_dl import WebDownloader
+
+web_dl = WebDownloader(auth)
+
+# Get game details (includes download info for installers/extras)
+details = api.get_game_details(1207658924)
+
+# Download extras (manuals, wallpapers, soundtracks)
+for extra in details.get('extras', []):
+    web_dl.download_from_game_details(
+        extra,
+        output_dir="./downloads/extras",
+        verify_checksum=True  # Verify MD5
+    )
+
+# Download offline installers
+for item in details.get('downloads', []):
+    for platform, files in item.items():
+        if isinstance(files, list):
+            for file_entry in files:
+                web_dl.download_from_game_details(
+                    file_entry,
+                    output_dir="./downloads/installers"
+                )
+```
+
+See [docs/WEB_DOWNLOADER.md](docs/WEB_DOWNLOADER.md) for complete extras documentation.
+
+
         output_dir="./downloads",
         progress_callback=progress_callback
     )
@@ -640,10 +689,10 @@ Response:    { "url_format": "{base_url}/token=...{path}",
 **Directory Layout:**
 ```
 <game_name>/v2/
-├── meta/{hash[:2]}/{hash[2:4]}/{hash}     # Depot & manifest metadata (zlib compressed)
-├── store/{hash[:2]}/{hash[2:4]}/{hash}    # File chunks (zlib compressed)
+├── meta/{hash[:2]}/{hash[2:4]}/{hash}                      # Depot & manifest metadata (zlib compressed)
+├── store/{product_id}/{hash[:2]}/{hash[2:4]}/{hash}        # File chunks (zlib compressed, organized by product)
 └── debug/
-    ├── {hash}_depot.json                  # Human-readable depot
+    ├── {hash}_depot.json                                   # Human-readable depot
     └── {hash}_manifest.json               # Human-readable manifests
 ```
 
@@ -665,6 +714,10 @@ Response:    { "url_format": "{base_url}/token=...{path}",
              
 Final URL:   Append "/{hash[:2]}/{hash[2:4]}/{hash}" to path parameter
              Result: /content-system/v2/store/{product_id}/{hash[:2]}/{hash[2:4]}/{hash}
+
+IMPORTANT:   Chunks MUST be organized by product_id to prevent MD5 collisions.
+             Different products may have chunks with identical hashes but different content.
+             Local storage should mirror CDN structure: store/{product_id}/{hash}
 ```
 
 **How V2 Works:**
@@ -676,9 +729,11 @@ Final URL:   Append "/{hash[:2]}/{hash[2:4]}/{hash}" to path parameter
 
 **Why This Structure:**
 - Content-addressed storage: `{hash}` = MD5 of compressed chunk
-- Per-product deduplication: All builds of same game share chunk pool
+- Per-product deduplication: All builds of same game share chunk pool within same product_id
+- Product isolation: Different products may have chunks with same hash but different content
 - Hash-based paths enable global CDN caching
-- Compressed JSONs saved efficiency (zlib format)
+- Compressed JSONs saved for efficiency (zlib format)
+- **Critical:** MD5 collisions between products can occur - must organize by product_id
 
 ---
 

@@ -7,6 +7,11 @@ Downloads all content from GOG Galaxy CDN in original format:
 - Manifest JSONs (as received)
 - All chunks/blobs (compressed)
 
+NOTE: A single build may contain multiple products (base game + DLC + toolkits).
+      Chunks are organized by product_id to prevent MD5 collisions between products.
+      Example: Cyberpunk 2077 includes base game (1423049311), REDMod (1597316373), 
+               and other components in one depot.
+
 Usage:
     V2 (with build lookup):    python archive_game.py v2 <game_id> --build-id <build_id> [<game_name>] [--platform <windows|osx|linux>]
     V2 (direct repository):    python archive_game.py v2 <game_id> --repository-id <repo_hash> [<game_name>]
@@ -185,7 +190,9 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         except Exception as e:
             print(f"   ⚠ Could not download offlineDepot manifest: {e}")
     
-    all_chunks = {}  # {md5: {'chunk': chunk_info, 'product_id': product_id}}
+    # Organize chunks by product_id to download all instances
+    # Format: {product_id: {md5: chunk_data}}
+    chunks_by_product = {}
     
     # Process regular depots
     for depot in depot_json['depots']:
@@ -206,15 +213,21 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         with open(debug_manifest_path, 'w') as f:
             json.dump(manifest_json, f, indent=2)
         
+        # Initialize product_id dict if not exists
+        if depot_product_id not in chunks_by_product:
+            chunks_by_product[depot_product_id] = {}
+        
+        product_chunks = chunks_by_product[depot_product_id]
+        
         # Collect chunks from smallFilesContainer first (if present)
         # These are the primary source for small files
         if 'smallFilesContainer' in manifest_json['depot']:
             sfc = manifest_json['depot']['smallFilesContainer']
             for chunk in sfc.get('chunks', []):
-                if chunk['compressedMd5'] not in all_chunks:
-                    all_chunks[chunk['compressedMd5']] = {
+                if chunk['compressedMd5'] not in product_chunks:
+                    product_chunks[chunk['compressedMd5']] = {
                         'chunk': chunk,
-                        'product_id': depot_product_id,  # SFC uses depot's product ID
+                        'product_id': depot_product_id,
                         'is_sfc': True
                     }
         
@@ -225,8 +238,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             if item['type'] == 'DepotFile':
                 has_sfc_ref = 'sfcRef' in item
                 for chunk in item.get('chunks', []):
-                    if chunk['compressedMd5'] not in all_chunks:
-                        all_chunks[chunk['compressedMd5']] = {
+                    if chunk['compressedMd5'] not in product_chunks:
+                        product_chunks[chunk['compressedMd5']] = {
                             'chunk': chunk,
                             'product_id': depot_product_id,
                             'is_sfc': False,
@@ -236,120 +249,134 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         print(f"   ✓ {manifest_path}")
         print(f"   ✓ {debug_manifest_path}")
     
-    # 3. Download all chunks: v2/store/2e/0d/2e0dc2f5...
-    print(f"\n[3/3] Downloading {len(all_chunks)} unique chunks...")
-    
-    total_size = sum(c['chunk']['compressedSize'] for c in all_chunks.values())
-    print(f"   Total: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
+    # 3. Download chunks organized by product_id
+    print(f"\n[3/3] Downloading chunks (organized by product_id)...")
+    print(f"   Products found: {len(chunks_by_product)}")
+    for product_id in chunks_by_product:
+        print(f"     - {product_id}: {len(chunks_by_product[product_id])} chunks")
     
     if dry_run:
-        print(f"   [DRY RUN] Would download {len(all_chunks)} chunks ({total_size/1024/1024:.2f} MB)")
+        total_chunks = sum(len(chunks) for chunks in chunks_by_product.values())
+        total_size = sum(
+            c['chunk']['compressedSize'] 
+            for chunks in chunks_by_product.values() 
+            for c in chunks.values()
+        )
+        print(f"   [DRY RUN] Would download {total_chunks} total chunks ({total_size/1024/1024:.2f} MB)")
         print(f"\n✓ Dry run complete: manifests downloaded, chunks skipped")
         print(f"\n✓ Complete: {base_dir}")
         return
     
-    # Download SFC chunks first, then regular chunks, then SFC-fallback chunks last
-    sfc_chunks = [(md5, data) for md5, data in all_chunks.items() if data.get('is_sfc', False)]
-    regular_chunks = [(md5, data) for md5, data in all_chunks.items() if not data.get('is_sfc', False) and not data.get('has_sfc_fallback', False)]
-    sfc_fallback_chunks = [(md5, data) for md5, data in all_chunks.items() if data.get('has_sfc_fallback', False)]
-    
-    print(f"   SFC chunks: {len(sfc_chunks)}, Regular chunks: {len(regular_chunks)}, SFC-fallback chunks: {len(sfc_fallback_chunks)}")
-    
-    # Thread-safe counters and lock for progress updates
-    stats = {'downloaded': 0, 'skipped': 0, 'failed': 0, 'completed': 0}
-    stats_lock = Lock()
-    
-    def download_chunk(chunk_task):
-        """Download a single chunk (thread-safe) with retry logic."""
-        md5, chunk_data = chunk_task
-        chunk_info = chunk_data['chunk']
-        product_id = chunk_data['product_id']
-        has_sfc_fallback = chunk_data.get('has_sfc_fallback', False)
-        chunk_type = "SFC" if chunk_data.get('is_sfc') else ("SFC-fallback" if has_sfc_fallback else "Regular")
+    # Process each product_id sequentially
+    for product_idx, (product_id, product_chunks) in enumerate(chunks_by_product.items(), 1):
+        print(f"\n--- Product {product_idx}/{len(chunks_by_product)}: {product_id} ---")
         
-        chunk_dir = os.path.join(base_dir, "store", md5[:2], md5[2:4])
-        os.makedirs(chunk_dir, exist_ok=True)
-        chunk_path = os.path.join(chunk_dir, md5)
+        total_size = sum(c['chunk']['compressedSize'] for c in product_chunks.values())
+        print(f"   Chunks: {len(product_chunks)}")
+        print(f"   Total size: {total_size:,} bytes ({total_size/1024/1024:.2f} MB)")
         
-        if os.path.exists(chunk_path):
-            with stats_lock:
-                stats['skipped'] += 1
-            return ('skipped', md5, chunk_type)
+        # Separate chunks by type for this product
+        sfc_chunks = [(md5, data) for md5, data in product_chunks.items() if data.get('is_sfc', False)]
+        regular_chunks = [(md5, data) for md5, data in product_chunks.items() if not data.get('is_sfc', False) and not data.get('has_sfc_fallback', False)]
+        sfc_fallback_chunks = [(md5, data) for md5, data in product_chunks.items() if data.get('has_sfc_fallback', False)]
         
-        # Retry logic for transient network errors
-        max_retries = 3
-        retry_delay = 1  # seconds
-        last_error = None
+        print(f"   SFC: {len(sfc_chunks)}, Regular: {len(regular_chunks)}, SFC-fallback: {len(sfc_fallback_chunks)}")
         
-        for attempt in range(max_retries):
-            try:
-                downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
+        # Thread-safe stats for this product
+        stats = {'downloaded': 0, 'skipped': 0, 'failed': 0}
+        stats_lock = Lock()
+        
+        def download_chunk(chunk_task):
+            """Download a single chunk (thread-safe) with retry logic."""
+            md5, chunk_data = chunk_task
+            chunk_info = chunk_data['chunk']
+            product_id = chunk_data['product_id']
+            has_sfc_fallback = chunk_data.get('has_sfc_fallback', False)
+            chunk_type = "SFC" if chunk_data.get('is_sfc') else ("SFC-fallback" if has_sfc_fallback else "Regular")
+            
+            # Store chunks organized by product_id to match GOG CDN structure and prevent MD5 collisions
+            chunk_dir = os.path.join(base_dir, "store", product_id, md5[:2], md5[2:4])
+            os.makedirs(chunk_dir, exist_ok=True)
+            chunk_path = os.path.join(chunk_dir, md5)
+            
+            if os.path.exists(chunk_path):
                 with stats_lock:
-                    stats['downloaded'] += 1
-                return ('downloaded', chunk_path, chunk_type)
-                
-            except (ConnectionResetError, ConnectionAbortedError, 
-                    ConnectionError, TimeoutError, OSError) as e:
-                # Check if it's a connection-related OSError (e.g., errno 10054 on Windows)
-                if isinstance(e, OSError) and e.errno not in [10053, 10054, 104]:
-                    # Not a connection termination error, don't retry
+                    stats['skipped'] += 1
+                return ('skipped', md5, chunk_type)
+            
+            # Retry logic for transient network errors
+            max_retries = 3
+            retry_delay = 1  # seconds
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
+                    with stats_lock:
+                        stats['downloaded'] += 1
+                    return ('downloaded', chunk_path, chunk_type)
+                    
+                except (ConnectionResetError, ConnectionAbortedError, 
+                        ConnectionError, TimeoutError, OSError) as e:
+                    # Check if it's a connection-related OSError (e.g., errno 10054 on Windows)
+                    if isinstance(e, OSError) and e.errno not in [10053, 10054, 104]:
+                        # Not a connection termination error, don't retry
+                        last_error = e
+                        break
+                        
                     last_error = e
-                    break
-                    
-                last_error = e
-                # Transient network errors - retry
-                if attempt < max_retries - 1:
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                    continue
-                # Final attempt failed - fall through to error handling below
-                    
-            except Exception as e:
-                # Non-retryable errors (HTTP 404, 403, etc.)
-                last_error = e
-                break  # Don't retry for non-network errors
-        
-        # If we get here, all retries failed or we hit a non-retryable error
-        if has_sfc_fallback:
-            with stats_lock:
-                stats['skipped'] += 1
-            return ('sfc_fallback', md5, None)
-        else:
-            error_msg = f"product {product_id} - {last_error}"
-            if isinstance(last_error, (ConnectionResetError, ConnectionAbortedError, ConnectionError, TimeoutError)):
-                error_msg += f" (after {max_retries} attempts)"
-            with stats_lock:
-                stats['failed'] += 1
-            return ('failed', md5, error_msg)
-    
-    # Download chunks in parallel
-    all_chunk_tasks = sfc_chunks + regular_chunks + sfc_fallback_chunks
-    total_chunks = len(all_chunks)
-    
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(download_chunk, task) for task in all_chunk_tasks]
-        
-        for future in as_completed(futures):
-            result = future.result()
-            status, identifier, extra = result
+                    # Transient network errors - retry
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                    # Final attempt failed - fall through to error handling below
+                        
+                except Exception as e:
+                    # Non-retryable errors (HTTP 404, 403, etc.)
+                    last_error = e
+                    break  # Don't retry for non-network errors
             
-            with stats_lock:
-                stats['completed'] += 1
-                current = stats['completed']
+            # If we get here, all retries failed or we hit a non-retryable error
+            if has_sfc_fallback:
+                with stats_lock:
+                    stats['skipped'] += 1
+                return ('sfc_fallback', md5, None)
+            else:
+                error_msg = f"product {product_id} - {last_error}"
+                if isinstance(last_error, (ConnectionResetError, ConnectionAbortedError, ConnectionError, TimeoutError)):
+                    error_msg += f" (after {max_retries} attempts)"
+                with stats_lock:
+                    stats['failed'] += 1
+                return ('failed', md5, error_msg)
+        
+        # Download chunks in parallel for this product
+        all_chunk_tasks = sfc_chunks + regular_chunks + sfc_fallback_chunks
+        
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(download_chunk, task) for task in all_chunk_tasks]
             
-            if status == 'downloaded':
-                print(f"   [{current}/{total_chunks}] Downloaded: {identifier} ({extra})")
-            elif status == 'skipped':
-                print(f"   [{current}/{total_chunks}] Exists: {identifier} ({extra})")
-            elif status == 'sfc_fallback':
-                print(f"   [{current}/{total_chunks}] Not on CDN: {identifier} (file content available in SFC)")
-            elif status == 'failed':
-                print(f"   [{current}/{total_chunks}] FAILED: {identifier} ({extra})")
+            completed = 0
+            for future in as_completed(futures):
+                result = future.result()
+                status, identifier, extra = result
+                
+                completed += 1
+                
+                if status == 'downloaded':
+                    print(f"   [{completed}/{len(all_chunk_tasks)}] Downloaded: {identifier} ({extra})")
+                elif status == 'skipped':
+                    print(f"   [{completed}/{len(all_chunk_tasks)}] Exists: {identifier} ({extra})")
+                elif status == 'sfc_fallback':
+                    print(f"   [{completed}/{len(all_chunk_tasks)}] Not on CDN: {identifier} (file in SFC)")
+                elif status == 'failed':
+                    print(f"   [{completed}/{len(all_chunk_tasks)}] FAILED: {identifier} ({extra})")
+        
+        print(f"   Product {product_id}: Downloaded {stats['downloaded']}, Skipped {stats['skipped']}, Failed {stats['failed']}")
     
-    print(f"\n✓ Downloaded: {stats['downloaded']}, Skipped: {stats['skipped']}, Failed: {stats['failed']}")
-    
-    print(f"\n✓ Complete: {base_dir}")
+    print(f"\n✓ All products complete!")
+    print(f"\n✓ Archive location: {base_dir}")
 
 
 

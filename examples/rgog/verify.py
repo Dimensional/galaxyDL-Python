@@ -17,7 +17,10 @@ from typing import Dict, Set, Tuple, List, Optional
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
-from .common import RGOGHeader, bytes_to_md5, resolve_first_part, get_all_parts
+from .common import (
+    RGOGHeader, bytes_to_md5, resolve_first_part, get_all_parts,
+    CHUNK_METADATA_SIZE, CHECK_MARK, CROSS_MARK, INFO_MARK
+)
 
 
 @dataclass
@@ -301,10 +304,10 @@ def execute(args):
             part_header = RGOGHeader.from_bytes(header_data)
             
             if part_header.magic != b'RGOG':
-                print(f"✗ Part {part_path.name}: Invalid magic number")
+                print(f"{CROSS_MARK} Part {part_path.name}: Invalid magic number")
                 return 1
         
-        print(f"✓ Part {part_path.name}: Header valid")
+        print(f"{CHECK_MARK} Part {part_path.name}: Header valid")
     
     print(f"\nArchive Summary:")
     print(f"  Total Parts: {header.total_parts}")
@@ -334,7 +337,7 @@ def execute(args):
                     # Read build metadata header (48 bytes)
                     build_header = f.read(48)
                     if len(build_header) != 48:
-                        print(f"✗ Build {i + 1}: Failed to read metadata")
+                        print(f"{CROSS_MARK} Build {i + 1}: Failed to read metadata")
                         stats.add_error()
                         continue
                     
@@ -346,7 +349,7 @@ def execute(args):
                     for j in range(manifest_count):
                         manifest_data = f.read(56)
                         if len(manifest_data) != 56:
-                            print(f"✗ Build {i + 1}: Failed to read manifest {j + 1}")
+                            print(f"{CROSS_MARK} Build {i + 1}: Failed to read manifest {j + 1}")
                             stats.add_error()
                             continue
                         # Parse: depot_id (16) + offset (8) + size (8) + languages1 (8) + languages2 (8) + product_id (8)
@@ -361,7 +364,7 @@ def execute(args):
                     f.seek(current_pos)
                     
                     if len(repo_data) != repo_size:
-                        print(f"✗ Build {i + 1}: Size mismatch (expected {repo_size}, got {len(repo_data)})")
+                        print(f"{CROSS_MARK} Build {i + 1}: Size mismatch (expected {repo_size}, got {len(repo_data)})")
                         stats.add_error()
                         continue
                     
@@ -371,13 +374,13 @@ def execute(args):
                     if actual_md5 != repo_md5:
                         expected = bytes_to_md5(repo_md5)
                         got = bytes_to_md5(actual_md5)
-                        print(f"✗ Build {i + 1}: MD5 mismatch (expected {expected}, got {got})")
+                        print(f"{CROSS_MARK} Build {i + 1}: MD5 mismatch (expected {expected}, got {got})")
                         stats.add_error()
                         continue
                     
                     if args.detailed:
                         md5_str = bytes_to_md5(repo_md5)
-                        print(f"  ✓ Build {i + 1} repository: {md5_str} ({repo_size} bytes)")
+                        print(f"  {CHECK_MARK} Build {i + 1} repository: {md5_str} ({repo_size} bytes)")
                     
                     # Verify depot manifests
                     for j, (depot_id, depot_offset, depot_size) in enumerate(manifests):
@@ -388,7 +391,7 @@ def execute(args):
                         f.seek(current_pos)
                         
                         if len(depot_data) != depot_size:
-                            print(f"✗ Build {i + 1}, Depot {j + 1}: Size mismatch (expected {depot_size}, got {len(depot_data)})")
+                            print(f"{CROSS_MARK} Build {i + 1}, Depot {j + 1}: Size mismatch (expected {depot_size}, got {len(depot_data)})")
                             stats.add_error()
                             continue
                         
@@ -398,17 +401,17 @@ def execute(args):
                         if actual_depot_md5 != depot_id:
                             expected = bytes_to_md5(depot_id)
                             got = bytes_to_md5(actual_depot_md5)
-                            print(f"✗ Build {i + 1}, Depot {j + 1}: MD5 mismatch (expected {expected}, got {got})")
+                            print(f"{CROSS_MARK} Build {i + 1}, Depot {j + 1}: MD5 mismatch (expected {expected}, got {got})")
                             stats.add_error()
                             continue
                         
                         if args.detailed:
                             depot_md5_str = bytes_to_md5(depot_id)
-                            print(f"    ✓ Depot {j + 1}: {depot_md5_str} ({depot_size} bytes)")
+                            print(f"    {CHECK_MARK} Depot {j + 1}: {depot_md5_str} ({depot_size} bytes)")
                 
                 errors, _, _ = stats.get_stats()
                 if errors == 0:
-                    print(f"✓ All {header.total_build_count} build file(s) verified successfully")
+                    print(f"{CHECK_MARK} All {header.total_build_count} build file(s) verified successfully")
         
         # Verify chunk MD5 checksums across all parts (multi-threaded)
         if header.total_chunk_count > 0:
@@ -431,15 +434,15 @@ def execute(args):
                     f.seek(part_header.chunk_metadata_offset)
                     
                     for i in range(part_header.local_chunk_count):
-                        # Read chunk metadata entry (32 bytes)
-                        chunk_meta = f.read(32)
-                        if len(chunk_meta) != 32:
-                            print(f"✗ Part {part_path.name}, Chunk {i + 1}: Failed to read metadata")
+                        # Read chunk metadata entry (CHUNK_METADATA_SIZE bytes with product_id)
+                        chunk_meta = f.read(CHUNK_METADATA_SIZE)
+                        if len(chunk_meta) != CHUNK_METADATA_SIZE:
+                            print(f"{CROSS_MARK} Part {part_path.name}, Chunk {i + 1}: Failed to read metadata")
                             stats.add_error()
                             continue
                         
-                        # Parse: compressed_md5 (16) + offset (8) + compressed_size (8)
-                        compressed_md5, offset, compressed_size = struct.unpack('<16sQQ', chunk_meta)
+                        # Parse: compressed_md5 (16) + offset (8) + compressed_size (8) + product_id (8)
+                        compressed_md5, offset, compressed_size, product_id = struct.unpack('<16sQQQ', chunk_meta)
                         
                         # Offset is relative to chunk_files_offset, make it absolute
                         absolute_offset = part_header.chunk_files_offset + offset
@@ -481,7 +484,7 @@ def execute(args):
                             ordered_result = heapq.heappop(result_queue)
                             
                             if not ordered_result.success:
-                                print(f"✗ Part {ordered_result.part_name}, Chunk {ordered_result.chunk_index}: {ordered_result.error_message}")
+                                print(f"{CROSS_MARK} Part {ordered_result.part_name}, Chunk {ordered_result.chunk_index}: {ordered_result.error_message}")
                                 stats.add_error()
                             else:
                                 stats.add_verified_compressed()
@@ -489,7 +492,7 @@ def execute(args):
                                     stats.add_verified_decompressed()
                                 
                                 if args.detailed:
-                                    detail_str = f"  ✓ Part {ordered_result.part_name}, Chunk {ordered_result.chunk_index}: {ordered_result.compressed_md5_str}"
+                                    detail_str = f"  {CHECK_MARK} Part {ordered_result.part_name}, Chunk {ordered_result.chunk_index}: {ordered_result.compressed_md5_str}"
                                     if ordered_result.decompressed_md5_str:
                                         detail_str += f" (decompressed: {ordered_result.decompressed_md5_str})"
                                     print(detail_str)
@@ -501,7 +504,7 @@ def execute(args):
                     result = verify_chunk_worker(task, full_verify)
                     
                     if not result.success:
-                        print(f"✗ Part {result.part_name}, Chunk {result.chunk_index}: {result.error_message}")
+                        print(f"{CROSS_MARK} Part {result.part_name}, Chunk {result.chunk_index}: {result.error_message}")
                         stats.add_error()
                     else:
                         stats.add_verified_compressed()
@@ -509,14 +512,14 @@ def execute(args):
                             stats.add_verified_decompressed()
                         
                         if args.detailed:
-                            detail_str = f"  ✓ Part {result.part_name}, Chunk {result.chunk_index}: {result.compressed_md5_str}"
+                            detail_str = f"  {CHECK_MARK} Part {result.part_name}, Chunk {result.chunk_index}: {result.compressed_md5_str}"
                             if result.decompressed_md5_str:
                                 detail_str += f" (decompressed: {result.decompressed_md5_str})"
                             print(detail_str)
             
             errors, verified_compressed, verified_decompressed = stats.get_stats()
             if errors == 0:
-                success_msg = f"✓ All {header.total_chunk_count} chunks verified successfully"
+                success_msg = f"{CHECK_MARK} All {header.total_chunk_count} chunks verified successfully"
                 if full_verify and verified_decompressed > 0:
                     success_msg += f" ({verified_decompressed} decompressed)"
                 print(success_msg)
@@ -524,7 +527,7 @@ def execute(args):
         # Final result
         errors, _, _ = stats.get_stats()
         if errors > 0:
-            print(f"\n✗ Verification failed: {errors} error(s) found")
+            print(f"\n{CROSS_MARK} Verification failed: {errors} error(s) found")
             return 1
     
     return 0

@@ -164,20 +164,23 @@ RGOG archives follow a metadata-first layout optimized for both creation and ext
 
 ## Input Directory Structure
 
-The toolunpack.py            # Unpack command implementation
-    ├── list.py              # List command implementation
-    ├── extract.py           # Extract command implementation
-    ├── verify.py            # Verify command implementation
-    ├── info.py              # Info command implementation
-    └── UNPACK_GUIDE.md      # Detailed unpack docu
-├── meta/
-│   ├── <hash1>              # Repository files (zlib compressed JSON)
-│   ├── <hash2>              # Manifest files (zlib compressed JSON)
-│   └── ...
-└── chunks/
-    ├── <md5>.chunk          # Chunk files (zlib compressed data)
-    └── ...
+The pack command expects a GOG Galaxy v2 directory structure:
+
 ```
+game_directory/
+├── v2/
+│   ├── meta/
+│   │   ├── XX/YY/<hash>     # Repository files (zlib compressed JSON)
+│   │   └── XX/YY/<hash>     # Manifest files (zlib compressed JSON)
+│   └── store/
+│       └── <product_id>/    # Product ID subdirectory (e.g., 1744110647)
+│           ├── XX/YY/<hash> # Chunk files (zlib compressed data)
+│           ├── XX/YY/<hash> # Organized by first 4 hex chars of MD5
+│           └── ...
+```
+
+**Note**: The store directory must contain product_id subdirectories (numeric directory names).
+This structure is created automatically by the `archive_game.py` download script.
 
 ## Code Structure
 

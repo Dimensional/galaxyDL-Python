@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from .common import (
     RGOGHeader, ProductMetadata, BuildMetadata, ManifestEntry, ChunkMetadata,
     ARCHIVE_TYPE_BASE, ARCHIVE_TYPE_PATCH, SECTION_ALIGNMENT, DEFAULT_PART_SIZE,
+    CHUNK_METADATA_SIZE,
     OS_WINDOWS, OS_MAC, OS_LINUX, OS_NULL,
     md5_to_bytes, bytes_to_md5, align_to_boundary, get_padding,
     identify_and_parse_meta_file, parse_manifest_file, find_depot_manifest_file,
@@ -43,6 +44,7 @@ class ChunkInfo:
     filename: str  # MD5 hex string
     compressed_md5: bytes  # 16-byte binary
     file_size: int
+    product_id: int  # Product ID from directory structure
     part_number: int = 0
 
 
@@ -157,47 +159,67 @@ def scan_chunks(chunks_dir: Path) -> List[ChunkInfo]:
     """
     Scan all chunk files in the store directory.
     
-    Chunk files are stored in nested structure: store/{hex0:2}/{hex2:2}/{fullhash}
-    Returns sorted list of ChunkInfo objects.
+    Supports product_id-separated structure: store/{product_id}/XX/YY/hash
+    where XX = first 2 hex chars, YY = next 2 hex chars of the MD5 hash.
+    
+    Returns sorted list of ChunkInfo objects with product_id extracted from path.
     """
     chunks = []
     
-    # Find all files in nested store directory structure
-    # Pattern: store/XX/YY/hash (where XX = first 2 hex chars, YY = next 2 hex chars)
-    chunk_files = list(chunks_dir.rglob('*/*/*'))
+    # Check if store has product_id subdirectories (all numeric directory names)
+    subdirs = [d for d in chunks_dir.iterdir() if d.is_dir()]
     
-    for chunk_path in chunk_files:
-        if not chunk_path.is_file():
-            continue
-        
-        filename = chunk_path.name  # Just the MD5 hash
-        
-        # Skip if not a valid MD5 hex string (32 chars)
-        if len(filename) != 32:
-            continue
-        
-        # Verify it matches the expected path structure: store/{hex0:2}/{hex2:2}/{fullhash}
-        # chunk_path.parent.parent.parent should be chunks_dir (3 levels deep)
-        if chunk_path.parent.parent.parent != chunks_dir:
-            continue
-        
-        try:
-            # Convert filename (MD5 hex) to binary
-            compressed_md5 = md5_to_bytes(filename)
-            file_size = chunk_path.stat().st_size
+    # Determine if we have product_id structure by checking if top-level dirs are numeric
+    product_id_dirs = [d for d in subdirs if d.name.isdigit()]
+    
+    if product_id_dirs:
+        # New structure: store/{product_id}/XX/YY/hash
+        for product_dir in product_id_dirs:
+            product_id = int(product_dir.name)
             
-            chunks.append(ChunkInfo(
-                path=chunk_path,
-                filename=filename,
-                compressed_md5=compressed_md5,
-                file_size=file_size,
-            ))
-        except Exception as e:
-            print(f"Warning: Failed to process chunk {chunk_path}: {e}")
-            continue
+            # Pattern: {product_id}/XX/YY/hash (4 levels deep from chunks_dir)
+            chunk_files = list(product_dir.rglob('*/*/*'))
+            
+            for chunk_path in chunk_files:
+                if not chunk_path.is_file():
+                    continue
+                
+                filename = chunk_path.name  # Just the MD5 hash
+                
+                # Skip if not a valid MD5 hex string (32 chars)
+                if len(filename) != 32:
+                    continue
+                
+                # Verify path structure: chunk_path.parent.parent.parent should be product_dir
+                if chunk_path.parent.parent.parent != product_dir:
+                    continue
+                
+                try:
+                    # Convert filename (MD5 hex) to binary
+                    compressed_md5 = md5_to_bytes(filename)
+                    file_size = chunk_path.stat().st_size
+                    
+                    chunks.append(ChunkInfo(
+                        path=chunk_path,
+                        filename=filename,
+                        compressed_md5=compressed_md5,
+                        file_size=file_size,
+                        product_id=product_id,
+                    ))
+                except Exception as e:
+                    print(f"Warning: Failed to process chunk {chunk_path}: {e}")
+                    continue
+    else:
+        # Old structure: store/XX/YY/hash (3 levels deep) - not supported for new archives
+        raise ValueError(
+            f"Error: Store directory does not contain product_id subdirectories.\n"
+            f"Expected structure: {chunks_dir}/{{product_id}}/{{XX}}/{{YY}}/{{hash}}\n"
+            f"Found: {chunks_dir}/{{XX}}/{{YY}}/{{hash}}\n"
+            f"Please use archive_game.py with the updated per-product structure."
+        )
     
-    # Sort by filename (alphanumeric)
-    chunks.sort(key=lambda c: c.filename.lower())
+    # Sort by product_id first, then by filename (alphanumeric)
+    chunks.sort(key=lambda c: (c.product_id, c.filename.lower()))
     return chunks
 
 
@@ -447,6 +469,7 @@ def write_part_0(
                     compressed_md5=chunk.compressed_md5,
                     offset=0,  # Placeholder
                     size=0,    # Placeholder
+                    product_id=chunk.product_id,
                 )
                 chunk_metadata_list.append(chunk_meta)
                 f.write(chunk_meta.to_bytes())
@@ -454,11 +477,21 @@ def write_part_0(
         f.write(get_padding(f.tell()))
         chunk_metadata_size = f.tell() - chunk_metadata_offset
         
-        # Step 7: Write Chunk Files
+        # Step 7: Write Chunk Files (grouped by product_id with padding)
         chunk_files_offset = f.tell()
         
         if part_assignment:
+            current_product_id = None
+            
             for i, chunk in enumerate(part_assignment.chunks):
+                # Add padding between product groups
+                if current_product_id is not None and chunk.product_id != current_product_id:
+                    padding_bytes = get_padding(f.tell())
+                    if padding_bytes:
+                        f.write(padding_bytes)
+                
+                current_product_id = chunk.product_id
+                
                 offset = f.tell() - chunk_files_offset
                 with open(chunk.path, 'rb') as cf:
                     data = cf.read()
@@ -534,6 +567,7 @@ def write_part_n(
                 compressed_md5=chunk.compressed_md5,
                 offset=0,  # Placeholder
                 size=0,    # Placeholder
+                product_id=chunk.product_id,
             )
             chunk_metadata_list.append(chunk_meta)
             f.write(chunk_meta.to_bytes())
@@ -541,13 +575,24 @@ def write_part_n(
         f.write(get_padding(f.tell()))
         chunk_metadata_size = f.tell() - chunk_metadata_offset
         
-        # Step 3: Write Chunk Files
+        # Step 4: Write Chunk Files (grouped by product_id with padding)
         chunk_files_offset = f.tell()
         
+        current_product_id = None
+        
         for i, chunk in enumerate(part_assignment.chunks):
+            # Add padding between product groups
+            if current_product_id is not None and chunk.product_id != current_product_id:
+                padding_bytes = get_padding(f.tell())
+                if padding_bytes:
+                    f.write(padding_bytes)
+            
+            current_product_id = chunk.product_id
+            
             offset = f.tell() - chunk_files_offset
             with open(chunk.path, 'rb') as cf:
                 data = cf.read()
+                f.write(data)
                 f.write(data)
             
             # Update metadata
@@ -584,7 +629,7 @@ def calculate_part_assignments(
     Calculate which chunks belong in which part based on size limits.
     
     Args:
-        chunks: List of all chunks (sorted)
+        chunks: List of all chunks (sorted by product_id, then alphanumeric)
         base_metadata_size: Size of header + product + build metadata
         max_part_size: Maximum size per part in bytes
         
@@ -597,7 +642,7 @@ def calculate_part_assignments(
     current_size = base_metadata_size if current_part == 1 else 128  # Header size
     
     for chunk in chunks:
-        chunk_overhead = 32  # ChunkMetadata size
+        chunk_overhead = CHUNK_METADATA_SIZE  # ChunkMetadata size
         chunk_total = chunk_overhead + chunk.file_size
         
         # Check if adding this chunk would exceed limit
