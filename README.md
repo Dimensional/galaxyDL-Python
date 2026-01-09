@@ -141,17 +141,18 @@ manage_dependencies.py download DirectX
 manage_dependencies.py download dotNet4
 
 # List dependencies for a specific game
-# For V2 games: use the *_depot.json file
-manage_dependencies.py list-game "The Witcher 2/v2/debug/e518c17d90805e8e3998a35fac8b8505_depot.json"
+# For V2 games: use the zlib-compressed depot file (typically in v2/ folder)
+# The script auto-decompresses these files
+manage_dependencies.py list-game "The Witcher 2/v2/meta/e5/18/e518c17d90805e8e3998a35fac8b8505"
 
-# For V1 games: use the repository.json file
+# For V1 games: use the plain JSON repository.json file
 manage_dependencies.py list-game "The Witcher 2/v1/manifests/1207658930/windows/37794096/repository.json"
 
 # Download dependencies for a game
-# For V2 games:
-manage_dependencies.py download-game "path/to/game_depot.json"
+# For V2 games: use the zlib-compressed depot file
+manage_dependencies.py download-game "path/to/compressed_depot_file"
 
-# For V1 games:
+# For V1 games: use the plain JSON repository.json file
 manage_dependencies.py download-game "path/to/repository.json"
 
 # Use custom storage location
