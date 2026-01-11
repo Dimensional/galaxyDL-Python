@@ -68,6 +68,8 @@ def cmd_login(args):
     # Manual login (original behavior)
     # If no code provided, show instructions
     if not args.code:
+        auth = AuthManager(config_path=args.config)
+        
         print("=" * 80)
         print("GOG AUTHENTICATION INSTRUCTIONS")
         print("=" * 80)
@@ -76,24 +78,31 @@ def cmd_login(args):
         print("  Run:     galaxy-dl login --gui")
         print("\nOption 2: Manual Login")
         print("\nStep 1: Visit this URL in your browser:")
-        print("\n  https://auth.gog.com/auth?client_id=46899977096215655&")
-        print("  redirect_uri=https%3A%2F%2Fembed.gog.com%2Fon_login_success%3Forigin%3Dclient&")
-        print("  response_type=code&layout=client2")
+        print(f"\n  {auth.get_oauth_url()}")
         print("\nStep 2: Log in to your GOG account")
-        print("\nStep 3: After successful login, you'll be redirected to a blank page.")
+        print("\nStep 3: After successful login, you'll be redirected to a page.")
         print("        The URL will look like:")
         print("        https://embed.gog.com/on_login_success?origin=client&code=XXXXXXX...")
-        print("\nStep 4: Copy the entire code after 'code=' (it's very long!)")
+        print("\nStep 4: Copy EITHER:")
+        print("        a) The entire URL from the address bar, OR")
+        print("        b) Just the code after 'code=' (it's very long!)")
         print("\nStep 5: Run this command:")
-        print("        galaxy-dl login <YOUR_CODE>")
+        print("        galaxy-dl login <YOUR_CODE_OR_URL>")
         print("\n" + "=" * 80)
         return 1
     
     auth = AuthManager(config_path=args.config)
     
+    # Try to extract code from URL first (in case user pasted full URL)
+    code = auth.extract_code_from_url(args.code)
+    
+    # If extraction failed, assume it's already just the code
+    if not code:
+        code = args.code
+    
     print("Authenticating with GOG...")
     
-    if auth.login_with_code(args.code):
+    if auth.login_with_code(code):
         print(f"✓ Successfully authenticated!")
         print(f"✓ Credentials saved to: {auth.config_path}")
         print(f"\nYou can now use:")

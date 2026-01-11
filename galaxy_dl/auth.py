@@ -216,3 +216,42 @@ class AuthManager:
             self.config_path.unlink()
         self.logger.info("Logged out and cleared credentials")
 
+    def get_oauth_url(self) -> str:
+        """
+        Get the OAuth authorization URL for browser-based login.
+        
+        Returns:
+            The full OAuth URL to open in a browser
+        """
+        return (
+            f"{constants.GOG_AUTH}/auth?"
+            f"client_id={self.client_id}&"
+            f"redirect_uri={REDIRECT_URI}&"
+            f"response_type=code&"
+            f"layout=client2"
+        )
+
+    def extract_code_from_url(self, url: str) -> Optional[str]:
+        """
+        Extract the authorization code from an OAuth redirect URL.
+        
+        Args:
+            url: The redirect URL containing the authorization code
+            
+        Returns:
+            The authorization code if found, None otherwise
+        """
+        from urllib.parse import urlparse, parse_qs
+        
+        # Check if this is the redirect URL
+        if not url.startswith(REDIRECT_URI):
+            return None
+        
+        # Parse the URL and extract code parameter
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        
+        if 'code' in params and params['code']:
+            return params['code'][0]
+        
+        return None

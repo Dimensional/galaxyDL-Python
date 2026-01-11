@@ -4,18 +4,25 @@ GUI Login Module for GOG Galaxy OAuth
 Provides a Qt6-based browser window for easier OAuth authentication.
 Automatically captures the authorization code from the redirect URL.
 
+This module ONLY contains PySide6-specific GUI code. The core authentication
+logic is in galaxy_dl.auth.AuthManager.
+
 Requires: pip install galaxy-dl[gui]
 """
 
 import logging
 import sys
 from typing import Optional
-from urllib.parse import urlparse, parse_qs
+
+from galaxy_dl.auth import AuthManager
 
 
-def gui_login() -> Optional[str]:
+def gui_login(auth_manager: Optional[AuthManager] = None) -> Optional[str]:
     """
     Open GUI browser for GOG OAuth login and capture authorization code.
+    
+    Args:
+        auth_manager: Optional AuthManager instance to use. If None, creates a new one.
     
     Returns:
         Authorization code string, or None if login failed/cancelled
@@ -27,22 +34,24 @@ def gui_login() -> Optional[str]:
         from PySide6.QtCore import QUrl, Slot
         from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
         from PySide6.QtWebEngineWidgets import QWebEngineView
-        from PySide6.QtWebEngineCore import QWebEnginePage
     except ImportError:
         raise ImportError(
             "PySide6 is required for GUI login.\n"
             "Install with: pip install galaxy-dl[gui]"
         )
     
-    from galaxy_dl import constants
+    # Create auth manager if not provided
+    if auth_manager is None:
+        auth_manager = AuthManager()
     
     logger = logging.getLogger("galaxy_dl.gui_login")
     
     class LoginBrowser(QMainWindow):
         """Browser window for GOG OAuth login."""
         
-        def __init__(self):
+        def __init__(self, auth_manager: AuthManager):
             super().__init__()
+            self.auth_manager = auth_manager
             self.auth_code: Optional[str] = None
             
             # Setup window
@@ -56,11 +65,8 @@ def gui_login() -> Optional[str]:
             # Connect URL changed signal
             self.browser.urlChanged.connect(self.on_url_changed)
             
-            # Load GOG OAuth URL
-            oauth_url = constants.OAUTH_URL_TEMPLATE.format(
-                client_id=constants.CLIENT_ID,
-                redirect_uri=constants.REDIRECT_URI
-            )
+            # Load OAuth URL from auth manager
+            oauth_url = self.auth_manager.get_oauth_url()
             logger.info(f"Loading OAuth URL: {oauth_url}")
             self.browser.setUrl(QUrl(oauth_url))
         
@@ -70,34 +76,22 @@ def gui_login() -> Optional[str]:
             url_str = url.toString()
             logger.debug(f"URL changed: {url_str}")
             
-            # Check if this is the success redirect
-            if url_str.startswith(constants.REDIRECT_URI):
-                logger.info("OAuth redirect detected")
+            # Use auth manager to extract code
+            code = self.auth_manager.extract_code_from_url(url_str)
+            
+            if code:
+                self.auth_code = code
+                logger.info(f"Authorization code captured: {code[:10]}...")
                 
-                # Parse URL to extract code
-                parsed = urlparse(url_str)
-                params = parse_qs(parsed.query)
+                # Show success message
+                QMessageBox.information(
+                    self,
+                    "Login Successful",
+                    "Authorization code captured successfully!\n\nYou can close this window."
+                )
                 
-                if 'code' in params:
-                    self.auth_code = params['code'][0]
-                    logger.info(f"Authorization code captured: {self.auth_code[:10]}...")
-                    
-                    # Show success message
-                    QMessageBox.information(
-                        self,
-                        "Login Successful",
-                        "Authorization code captured successfully!\n\nYou can close this window."
-                    )
-                    
-                    # Close the browser
-                    self.close()
-                else:
-                    logger.warning("Redirect URL missing 'code' parameter")
-                    QMessageBox.warning(
-                        self,
-                        "Login Error",
-                        "Failed to capture authorization code from redirect URL."
-                    )
+                # Close the browser
+                self.close()
     
     # Create Qt application if not already running
     app = QApplication.instance()
@@ -105,7 +99,7 @@ def gui_login() -> Optional[str]:
         app = QApplication(sys.argv)
     
     # Create and show login browser
-    browser = LoginBrowser()
+    browser = LoginBrowser(auth_manager)
     browser.show()
     
     # Run event loop
@@ -127,11 +121,5 @@ def main():
     
     if code:
         print(f"\n✓ Success! Authorization code: {code}")
-        print("\nYou can now use this code with:")
-        print(f"  galaxy-dl login {code}")
-    else:
-        print("\n✗ Login cancelled or failed")
-
-
-if __name__ == "__main__":
-    main()
+        print("\nYou can now use this code with AuthManager.login_with_code():")
+        print(f"  auth_manager.login_with_code('{code}')")
