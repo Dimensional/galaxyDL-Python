@@ -123,7 +123,7 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     print(f"\n=== Archiving V2 Build ===")
     if dry_run:
         print(f"[DRY RUN MODE - Manifests only, no chunks]")
-    print(f"Game: {game_name} ({game_id})")
+    print(f"Game: {os.path.join(game_name, game_id)}")
     print(f"Repository: {repository_id}")
     print(f"Workers: {num_workers}")
     
@@ -139,6 +139,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     os.makedirs(depot_dir, exist_ok=True)
     depot_path = os.path.join(depot_dir, repository_id)
     
+    depot_url = downloader.api.get_depot_url(repository_id)
+    print(f"   URL: {depot_url}")
     downloader.download_raw_depot(repository_id, depot_path)
     
     with open(depot_path, 'rb') as f:
@@ -175,6 +177,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         os.makedirs(manifest_dir, exist_ok=True)
         manifest_path = os.path.join(manifest_dir, manifest_id)
         
+        manifest_url = downloader.api.get_manifest_url(manifest_id, generation=2)
+        print(f"   URL: {manifest_url}")
         try:
             downloader.download_raw_manifest(manifest_id, manifest_path, generation=2)
             
@@ -203,6 +207,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         os.makedirs(manifest_dir, exist_ok=True)
         manifest_path = os.path.join(manifest_dir, manifest_id)
         
+        manifest_url = downloader.api.get_manifest_url(manifest_id, generation=2)
+        print(f"   URL: {manifest_url}")
         downloader.download_raw_manifest(manifest_id, manifest_path, generation=2)
         
         with open(manifest_path, 'rb') as f:
@@ -392,7 +398,7 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     print(f"\n=== Archiving V1 Build ===")
     if dry_run:
         print(f"[DRY RUN MODE - Manifests only, no main.bin]")
-    print(f"Game: {game_name} ({game_id})")
+    print(f"Game: {os.path.join(game_name, game_id)}")
     print(f"Repository: {repository_id}")
     
     # If platform not provided, try all platforms to find which one has this repository
@@ -433,6 +439,8 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     # 1. Download repository.json
     print("\n[1/2] Downloading repository metadata...")
     repo_path = os.path.join(base_dir, "repository.json")
+    repo_url = downloader.api.get_repository_url(game_id, platform, repository_id)
+    print(f"   URL: {repo_url}")
     downloader.download_raw_repository(game_id, platform, repository_id, repo_path)
     
     with open(repo_path, 'rb') as f:
@@ -451,6 +459,8 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         manifest_path = os.path.join(base_dir, manifest_id)
         
         # V1 manifests are plain JSON at: v1/manifests/{game_id}/{platform}/{timestamp}/{manifest_id}
+        manifest_url = downloader.api.get_manifest_url(manifest_id, game_id=game_id, platform=platform, timestamp=repository_id, generation=1)
+        print(f"   URL: {manifest_url}")
         downloader.download_raw_manifest(manifest_id, manifest_path, generation=1,
                                         game_id=game_id, platform=platform, timestamp=repository_id)
         print(f"   ✓ {manifest_path}")
@@ -468,6 +478,14 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         main_bin_path = os.path.join(depot_dir, "main.bin")
         
         try:
+            # Get and display secure link
+            endpoints = downloader.api.get_secure_link(game_id, "/", generation=1, return_full_response=True)
+            if endpoints:
+                endpoint = endpoints[0]
+                params = endpoint["parameters"].copy()
+                secure_url = downloader.api._merge_url_with_params(endpoint["url_format"], params)
+                print(f"   Secure URL: {secure_url}")
+            
             # Use parallel workers for faster downloads (50 MiB chunks each)
             downloader.download_main_bin(game_id, platform, repository_id, main_bin_path, num_workers=num_workers)
             print(f"   ✓ {main_bin_path}")
@@ -511,7 +529,7 @@ Examples:
                        help="Game name for directory structure (default: game_<id>)")
     parser.add_argument("--platform",
                        choices=["windows", "osx", "linux"],
-                       help="Platform (required for --build-id, auto-detected for V2 --repository-id, optional for V1 --repository-id)")
+                       help="Platform (required for --build-id and V1 --repository-id; auto-detected for V2 --repository-id)")
     parser.add_argument("--workers", type=int, default=8,
                        help="Number of parallel download workers (default: 8)")
     parser.add_argument("--dry-run", action="store_true",
