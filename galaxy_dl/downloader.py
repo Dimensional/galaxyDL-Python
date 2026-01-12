@@ -631,7 +631,8 @@ class GalaxyDownloader:
                 
                 data = response.content
                 
-                if len(data) != expected_size:
+                # Validate size if expected_size provided (pass 0 to skip size validation)
+                if expected_size > 0 and len(data) != expected_size:
                     self.logger.warning(f"Size mismatch: expected {expected_size}, got {len(data)}")
                     if attempt < retries - 1:
                         continue
@@ -772,7 +773,8 @@ class GalaxyDownloader:
         url = self.api.get_manifest_url(manifest_id, game_id, platform, timestamp, generation)
         self.api.download_raw(url, output_path)
     
-    def download_raw_chunk(self, compressed_md5: str, product_id: str, verify_hash: bool = True) -> bytes:
+    def download_raw_chunk(self, compressed_md5: str, product_id: str, verify_hash: bool = True, 
+                          size_compressed: int = 0) -> bytes:
         """
         Download V2 chunk in compressed format using secure links.
         
@@ -786,6 +788,7 @@ class GalaxyDownloader:
             compressed_md5: The compressedMd5 hash from manifest
             product_id: Product ID for secure link generation (required)
             verify_hash: Whether to verify chunk hash (default: True)
+            size_compressed: Expected compressed size for verification (optional, 0 = skip size check)
             
         Returns:
             Raw compressed chunk data as bytes
@@ -804,7 +807,7 @@ class GalaxyDownloader:
         chunk = DepotItemChunk(
             md5_compressed=compressed_md5,
             md5_uncompressed="",  # Not needed for raw download
-            size_compressed=0,  # Will be determined by actual download
+            size_compressed=size_compressed,  # Use provided size for verification, or 0 to skip
             size_uncompressed=0
         )
         

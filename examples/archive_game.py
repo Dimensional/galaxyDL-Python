@@ -317,7 +317,11 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             for attempt in range(max_retries):
                 try:
                     # Download chunk data (doesn't create files)
-                    chunk_bytes = downloader.download_raw_chunk(md5, product_id=product_id)
+                    chunk_bytes = downloader.download_raw_chunk(
+                        md5, 
+                        product_id=product_id,
+                        size_compressed=chunk_info['compressedSize']
+                    )
                     
                     # Only create directory and write file after successful download
                     os.makedirs(chunk_dir, exist_ok=True)
