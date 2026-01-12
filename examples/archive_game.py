@@ -300,9 +300,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             has_sfc_fallback = chunk_data.get('has_sfc_fallback', False)
             chunk_type = "SFC" if chunk_data.get('is_sfc') else ("SFC-fallback" if has_sfc_fallback else "Regular")
             
-            # Store chunks organized by product_id to match GOG CDN structure and prevent MD5 collisions
+            # Define paths but don't create directories yet
             chunk_dir = os.path.join(base_dir, "store", product_id, md5[:2], md5[2:4])
-            os.makedirs(chunk_dir, exist_ok=True)
             chunk_path = os.path.join(chunk_dir, md5)
             
             if os.path.exists(chunk_path):
@@ -317,7 +316,14 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             
             for attempt in range(max_retries):
                 try:
-                    downloader.download_raw_chunk(md5, chunk_path, product_id=product_id)
+                    # Download chunk data (doesn't create files)
+                    chunk_bytes = downloader.download_raw_chunk(md5, product_id=product_id)
+                    
+                    # Only create directory and write file after successful download
+                    os.makedirs(chunk_dir, exist_ok=True)
+                    with open(chunk_path, 'wb') as f:
+                        f.write(chunk_bytes)
+                    
                     with stats_lock:
                         stats['downloaded'] += 1
                     return ('downloaded', chunk_path, chunk_type)

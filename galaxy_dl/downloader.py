@@ -77,6 +77,48 @@ class GalaxyDownloader:
             "User-Agent": constants.USER_AGENT.format(version="0.1.0")
         })
 
+    def _decompress_chunk(self, compressed_data: bytes, size_compressed: int, size_uncompressed: int) -> bytes:
+        """
+        Decompress a chunk if needed.
+        
+        Helper function to avoid duplication across multiple methods.
+        
+        Args:
+            compressed_data: The compressed chunk data
+            size_compressed: Expected compressed size
+            size_uncompressed: Expected uncompressed size
+            
+        Returns:
+            Decompressed data (or original data if not compressed)
+        """
+        if size_compressed != size_uncompressed:
+            try:
+                return zlib.decompress(compressed_data, constants.ZLIB_WINDOW_SIZE)
+            except zlib.error as e:
+                raise DownloadError(f"Failed to decompress chunk: {e}")
+        return compressed_data
+    
+    def _verify_file_hash(self, file_path: str, expected_md5: str, hash_type: str = "md5") -> None:
+        """
+        Verify file hash and delete file if mismatch.
+        
+        Helper function to avoid duplication across multiple methods.
+        
+        Args:
+            file_path: Path to file to verify
+            expected_md5: Expected hash value
+            hash_type: Hash algorithm (default: md5)
+            
+        Raises:
+            DownloadError: If hash doesn't match
+        """
+        self.logger.debug("Verifying file hash...")
+        actual_hash = utils.calculate_hash(file_path, hash_type)
+        if actual_hash.lower() != expected_md5.lower():
+            self.logger.error(f"Hash mismatch! Expected: {expected_md5}, Got: {actual_hash}")
+            os.remove(file_path)
+            raise DownloadError("File hash verification failed")
+
     def download_item(self, item: DepotItem, output_dir: str,
                      cdn_urls: Optional[List[str]] = None,
                      verify_hash: bool = True,
@@ -155,11 +197,7 @@ class GalaxyDownloader:
         
         # Verify hash
         if verify_hash and item.v1_blob_md5:
-            actual_hash = utils.calculate_hash(output_path, "md5")
-            if actual_hash.lower() != item.v1_blob_md5.lower():
-                self.logger.error(f"Hash mismatch! Expected: {item.v1_blob_md5}, Got: {actual_hash}")
-                os.remove(output_path)
-                raise DownloadError("V1 blob hash verification failed")
+            self._verify_file_hash(output_path, item.v1_blob_md5)
         
         self.logger.info(f"Successfully downloaded V1 blob to {output_path}")
         return output_path
@@ -289,11 +327,7 @@ class GalaxyDownloader:
         
         # Verify hash
         if verify_hash and item.md5:
-            actual_hash = utils.calculate_hash(output_path, "md5")
-            if actual_hash.lower() != item.md5.lower():
-                self.logger.error(f"Hash mismatch! Expected: {item.md5}, Got: {actual_hash}")
-                os.remove(output_path)
-                raise DownloadError(f"Hash verification failed for {item.path}")
+            self._verify_file_hash(output_path, item.md5)
         
         self.logger.info(f"Successfully extracted V1 file to {output_path}")
         return output_path
@@ -389,12 +423,7 @@ class GalaxyDownloader:
         
         # Verify final file hash if available
         if item.md5 and verify_hash:
-            self.logger.debug("Verifying file hash...")
-            actual_hash = utils.calculate_hash(output_path, "md5")
-            if actual_hash.lower() != item.md5.lower():
-                self.logger.error(f"Hash mismatch! Expected: {item.md5}, Got: {actual_hash}")
-                os.remove(output_path)
-                raise DownloadError("File hash verification failed")
+            self._verify_file_hash(output_path, item.md5)
         
         self.logger.info(f"Successfully downloaded V2 item to {output_path}")
         return output_path
@@ -412,10 +441,9 @@ class GalaxyDownloader:
         Returns:
             Path to directory containing raw chunks
         """
-        # Create directory for chunks
+        # Determine directory for chunks (don't create yet)
         normalized_path = utils.normalize_path(item.path)
         chunks_dir = os.path.join(output_dir, f"{normalized_path}.chunks")
-        utils.ensure_directory(chunks_dir)
         
         self.logger.info(f"Downloading V2 raw chunks for {item.path} to {chunks_dir}")
         
@@ -471,6 +499,12 @@ class GalaxyDownloader:
                                    output_path: str, verify_hash: bool) -> None:
         """Download a single V2 chunk and save it to a file (compressed)."""
         chunk_data = self._download_v2_chunk(chunk, cdn_urls, verify_hash)
+        
+        # Only create directory after successful download
+        parent_dir = os.path.dirname(output_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        
         with open(output_path, 'wb') as f:
             f.write(chunk_data)
     
@@ -519,46 +553,54 @@ class GalaxyDownloader:
                 with open(chunk_path, 'rb') as f:
                     compressed_data = f.read()
                 
-                # Decompress if needed
-                if chunk_meta['size_compressed'] != chunk_meta['size_uncompressed']:
-                    try:
-                        decompressed_data = zlib.decompress(compressed_data, constants.ZLIB_WINDOW_SIZE)
-                    except zlib.error as e:
-                        raise DownloadError(f"Failed to decompress chunk {chunk_meta['index']}: {e}")
-                else:
-                    decompressed_data = compressed_data
+                # Decompress if needed using helper
+                decompressed_data = self._decompress_chunk(
+                    compressed_data,
+                    chunk_meta['size_compressed'],
+                    chunk_meta['size_uncompressed']
+                )
                 
                 output_file.write(decompressed_data)
         
-        # Verify hash
+        # Verify hash using helper
         if verify_hash and metadata.get('md5'):
-            self.logger.debug("Verifying assembled file hash...")
-            actual_hash = utils.calculate_hash(output_path, "md5")
-            if actual_hash.lower() != metadata['md5'].lower():
-                self.logger.error(f"Hash mismatch! Expected: {metadata['md5']}, Got: {actual_hash}")
-                os.remove(output_path)
-                raise DownloadError("Assembled file hash verification failed")
+            self._verify_file_hash(output_path, metadata['md5'])
         
         self.logger.info(f"Successfully assembled file to {output_path}")
         return output_path
     
     def _download_and_decompress_chunk(self, task: ChunkDownloadTask, cdn_urls: List[str]) -> bytes:
-        """Download and decompress a single V2 chunk."""
-        # Download chunk
+        """
+        Download and decompress a single V2 chunk.
+        
+        This is a convenience wrapper around _download_v2_chunk that handles decompression.
+        """
+        # Download chunk (already handles retry and verification)
         chunk_data = self._download_v2_chunk(task.chunk, cdn_urls, task.verify_hash)
         
-        # Decompress if needed
-        if task.chunk.size_compressed != task.chunk.size_uncompressed:
-            try:
-                chunk_data = zlib.decompress(chunk_data, constants.ZLIB_WINDOW_SIZE)
-            except zlib.error as e:
-                raise DownloadError(f"Failed to decompress chunk {task.chunk_index}: {e}")
-        
-        return chunk_data
+        # Decompress if needed using helper
+        return self._decompress_chunk(
+            chunk_data, 
+            task.chunk.size_compressed, 
+            task.chunk.size_uncompressed
+        )
 
     def _download_v2_chunk(self, chunk: DepotItemChunk, cdn_urls: List[str],
                           verify_hash: bool = True) -> bytes:
-        """Download a single V2 chunk with retry logic."""
+        """
+        Download a single V2 chunk with retry logic.
+        
+        Note: This method is used for installation/extraction. For archival purposes,
+        use download_raw_chunk directly with product_id parameter.
+        
+        Args:
+            chunk: Chunk to download
+            cdn_urls: Secure CDN URLs (with {GALAXY_PATH} template)
+            verify_hash: Whether to verify chunk hash
+            
+        Returns:
+            Raw compressed chunk data
+        """
         chunk_path = utils.galaxy_path(chunk.md5_compressed)
         
         for cdn_url in cdn_urls:
@@ -730,42 +772,44 @@ class GalaxyDownloader:
         url = self.api.get_manifest_url(manifest_id, game_id, platform, timestamp, generation)
         self.api.download_raw(url, output_path)
     
-    def download_raw_chunk(self, compressed_md5: str, output_path: str, product_id: str = None) -> None:
+    def download_raw_chunk(self, compressed_md5: str, product_id: str, verify_hash: bool = True) -> bytes:
         """
         Download V2 chunk in compressed format using secure links.
         
         V2 chunks require authenticated secure links for download.
+        Returns the raw compressed data for the caller to handle.
+        
+        This is a convenience wrapper that generates fresh secure links and uses
+        the standard chunk download mechanism.
         
         Args:
             compressed_md5: The compressedMd5 hash from manifest
-            output_path: Where to save the file
             product_id: Product ID for secure link generation (required)
+            verify_hash: Whether to verify chunk hash (default: True)
+            
+        Returns:
+            Raw compressed chunk data as bytes
         """
         if not product_id:
             raise ValueError("product_id is required for V2 chunk downloads")
         
-        # V2 chunks use the path pattern: /{hash[:2]}/{hash[2:4]}/{hash}
-        chunk_subpath = f"/{compressed_md5[:2]}/{compressed_md5[2:4]}/{compressed_md5}"
+        # Get secure link URLs for the product
+        cdn_urls = self.api.get_secure_link(product_id, "/", generation=2)
         
-        # Get secure link for the product (root path "/")
-        # This returns URL templates with {path} parameter set to /content-system/v2/store/{product_id}
-        endpoints = self.api.get_secure_link(product_id, "/", generation=2, return_full_response=True)
-        
-        if not endpoints:
+        if not cdn_urls:
             raise ValueError(f"Failed to get secure link for product {product_id}")
         
-        # Use the first endpoint (usually fastly)
-        endpoint = endpoints[0]
+        # Create a minimal chunk object for the download method
+        from galaxy_dl.models import DepotItemChunk
+        chunk = DepotItemChunk(
+            md5_compressed=compressed_md5,
+            md5_uncompressed="",  # Not needed for raw download
+            size_compressed=0,  # Will be determined by actual download
+            size_uncompressed=0
+        )
         
-        # Append the chunk subpath to the path parameter
-        params = endpoint["parameters"].copy()
-        params["path"] = params.get("path", "") + chunk_subpath
-        
-        # Merge URL template with parameters
-        url = self.api._merge_url_with_params(endpoint["url_format"], params)
-        
-        # Download the chunk
-        self.api.download_raw(url, output_path)
+        # Use the standard chunk download method
+        return self._download_v2_chunk(chunk, cdn_urls, verify_hash)
     
     def _extract_from_sfc(self, item: DepotItem, output_dir: str, sfc_data: bytes) -> str:
         """
