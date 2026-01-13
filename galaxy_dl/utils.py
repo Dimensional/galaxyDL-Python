@@ -6,6 +6,7 @@ Based on heroic-gogdl dl_utils.py and lgogdownloader util.cpp
 import hashlib
 import json
 import os
+import sys
 import zlib
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Callable
@@ -13,6 +14,67 @@ from typing import Optional, Tuple, Dict, Any, Callable
 import requests
 
 from galaxy_dl import constants
+
+
+# Global symbol variables (set by setup_symbols)
+SYMBOL_CHECK = '[OK]'
+SYMBOL_ERROR = '[ERROR]'
+SYMBOL_WARNING = '[WARNING]'
+SYMBOL_INFO = '[INFO]'
+
+
+def detect_unicode_support(force_ascii=False):
+    """
+    Detect if the terminal supports Unicode output.
+    
+    Args:
+        force_ascii: If True, force ASCII mode regardless of terminal support
+    
+    Returns:
+        True if Unicode is supported, False otherwise
+    """
+    # Check for explicit force ASCII flag
+    if force_ascii:
+        return False
+    
+    # Check for environment variable to force ASCII mode
+    if os.environ.get('FORCE_ASCII', '').lower() in ('1', 'true', 'yes'):
+        return False
+    
+    # Check if stdout encoding supports Unicode
+    try:
+        encoding = sys.stdout.encoding or ''
+        if encoding.lower() in ('utf-8', 'utf8'):
+            return True
+        
+        # Try to encode a Unicode character
+        '✓'.encode(encoding)
+        return True
+    except (UnicodeEncodeError, AttributeError, LookupError):
+        return False
+
+
+def setup_symbols(force_ascii=False):
+    """
+    Set up symbol variables based on Unicode support.
+    
+    Args:
+        force_ascii: If True, force ASCII mode
+    """
+    global SYMBOL_CHECK, SYMBOL_ERROR, SYMBOL_WARNING, SYMBOL_INFO
+    
+    use_unicode = detect_unicode_support(force_ascii)
+    
+    if use_unicode:
+        SYMBOL_CHECK = '✓'
+        SYMBOL_ERROR = '✗'
+        SYMBOL_WARNING = '⚠'
+        SYMBOL_INFO = 'ℹ'
+    else:
+        SYMBOL_CHECK = '[OK]'
+        SYMBOL_ERROR = '[ERROR]'
+        SYMBOL_WARNING = '[WARNING]'
+        SYMBOL_INFO = '[INFO]'
 
 
 def galaxy_path(manifest_hash: str) -> str:

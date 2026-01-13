@@ -39,6 +39,10 @@ from threading import Lock
 from galaxy_dl import GalaxyDownloader, constants
 from galaxy_dl.auth import AuthManager
 from galaxy_dl.api import GalaxyAPI
+from galaxy_dl.utils import setup_symbols, SYMBOL_CHECK, SYMBOL_ERROR, SYMBOL_WARNING, SYMBOL_INFO
+
+# Initialize symbols based on terminal support
+setup_symbols()
 
 
 def decompress_if_needed(data: bytes) -> dict:
@@ -88,7 +92,7 @@ def get_repository_from_build(api: GalaxyAPI, game_id: str, build_id: str, platf
             f"If this is a delisted build, use --repository-id instead of --build-id"
         )
     
-    print(f"  ✓ Found build: {matching_build.get('version_name', 'Unknown version')}")
+    print(f"  {SYMBOL_CHECK} Found build: {matching_build.get('version_name', 'Unknown version')}")
     
     # Extract repository ID based on generation
     if generation == 2:
@@ -99,7 +103,7 @@ def get_repository_from_build(api: GalaxyAPI, game_id: str, build_id: str, platf
         
         # Extract hash from URL: .../v2/meta/e5/18/e518c17d90805e8e3998a35fac8b8505
         repo_hash = link.split('/')[-1]
-        print(f"  ✓ Repository hash: {repo_hash}")
+        print(f"  {SYMBOL_CHECK} Repository hash: {repo_hash}")
         return repo_hash
     
     else:  # generation == 1
@@ -108,7 +112,7 @@ def get_repository_from_build(api: GalaxyAPI, game_id: str, build_id: str, platf
         if not repo_id:
             raise ValueError(f"Build {build_id} missing 'legacy_build_id' field")
         
-        print(f"  ✓ Repository ID: {repo_id}")
+        print(f"  {SYMBOL_CHECK} Repository ID: {repo_id}")
         return str(repo_id)
 
 
@@ -155,8 +159,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     with open(debug_depot_path, 'w') as f:
         json.dump(depot_json, f, indent=2)
     
-    print(f"   ✓ {depot_path}")
-    print(f"   ✓ {debug_depot_path}")
+    print(f"   {SYMBOL_CHECK} {depot_path}")
+    print(f"   {SYMBOL_CHECK} {debug_depot_path}")
     
     # 2. Download all manifests: v2/meta/79/a1/79a1f5fd...
     manifest_count = len(depot_json['depots'])
@@ -170,7 +174,7 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         offline_depot = depot_json['offlineDepot']
         manifest_id = offline_depot['manifest']
         
-        print(f"   ℹ Skipping offlineDepot manifest {manifest_id} (metadata not available via CDN)")
+        print(f"   {SYMBOL_INFO} Skipping offlineDepot manifest {manifest_id} (metadata not available via CDN)")
         
         # Still save the manifest JSON for reference
         manifest_dir = os.path.join(base_dir, "meta", manifest_id[:2], manifest_id[2:4])
@@ -190,9 +194,9 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             with open(debug_manifest_path, 'w') as f:
                 json.dump(manifest_json, f, indent=2)
             
-            print(f"   ✓ Saved offlineDepot manifest (chunks not downloadable)")
+            print(f"   {SYMBOL_CHECK} Saved offlineDepot manifest (chunks not downloadable)")
         except Exception as e:
-            print(f"   ⚠ Could not download offlineDepot manifest: {e}")
+            print(f"   {SYMBOL_WARNING} Could not download offlineDepot manifest: {e}")
     
     # Organize chunks by product_id to download all instances
     # Format: {product_id: {md5: chunk_data}}
@@ -252,8 +256,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
                             'has_sfc_fallback': has_sfc_ref  # CDN chunk may not exist; SFC has the file
                         }
         
-        print(f"   ✓ {manifest_path}")
-        print(f"   ✓ {debug_manifest_path}")
+        print(f"   {SYMBOL_CHECK} {manifest_path}")
+        print(f"   {SYMBOL_CHECK} {debug_manifest_path}")
     
     # 3. Download chunks organized by product_id
     print(f"\n[3/3] Downloading chunks (organized by product_id)...")
@@ -269,8 +273,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             for c in chunks.values()
         )
         print(f"   [DRY RUN] Would download {total_chunks} total chunks ({total_size/1024/1024:.2f} MB)")
-        print(f"\n✓ Dry run complete: manifests downloaded, chunks skipped")
-        print(f"\n✓ Complete: {base_dir}")
+        print(f"\n{SYMBOL_CHECK} Dry run complete: manifests downloaded, chunks skipped")
+        print(f"\n{SYMBOL_CHECK} Complete: {base_dir}")
         return
     
     # Process each product_id sequentially
@@ -391,8 +395,8 @@ def archive_v2_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         
         print(f"   Product {product_id}: Downloaded {stats['downloaded']}, Skipped {stats['skipped']}, Failed {stats['failed']}")
     
-    print(f"\n✓ All products complete!")
-    print(f"\n✓ Archive location: {base_dir}")
+    print(f"\n{SYMBOL_CHECK} All products complete!")
+    print(f"\n{SYMBOL_CHECK} Archive location: {base_dir}")
 
 
 
@@ -418,23 +422,30 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             test_base_dir = os.path.join(game_name, "v1", "manifests", game_id, test_platform, repository_id)
             test_repo_path = os.path.join(test_base_dir, "repository.json")
             try:
-                # Try to download repository.json to test if it exists
-                os.makedirs(test_base_dir, exist_ok=True)
-                downloader.download_raw_repository(game_id, test_platform, repository_id, test_repo_path)
+                # Try to fetch repository.json to memory without creating directories
+                repo_url = downloader.api.get_repository_url(game_id, test_platform, repository_id)
+                downloader.api._update_auth_header()
+                response = downloader.session.get(repo_url, timeout=constants.DEFAULT_TIMEOUT)
+                response.raise_for_status()
+                
+                # Parse the repository JSON to confirm platform
+                repo_data = response.content
+                repo_json = decompress_if_needed(repo_data)
+                systems = repo_json.get('product', {}).get('depots', [{}])[0].get('systems', [])
+                
                 # If successful, we found the platform
                 platform = test_platform
-                print(f"   ✓ Platform detected: {platform}")
-                # Parse the repository JSON to confirm
-                with open(test_repo_path, 'rb') as f:
-                    repo_json = decompress_if_needed(f.read())
-                systems = repo_json.get('product', {}).get('depots', [{}])[0].get('systems', [])
+                print(f"   {SYMBOL_CHECK} Platform detected: {platform}")
                 if systems:
-                    print(f"   ✓ Confirmed from depot systems: {systems}")
+                    print(f"   {SYMBOL_CHECK} Confirmed from depot systems: {systems}")
+                
+                # Now create directory and save the file
+                os.makedirs(test_base_dir, exist_ok=True)
+                with open(test_repo_path, 'wb') as f:
+                    f.write(repo_data)
                 break
             except Exception:
-                # Clean up failed attempt
-                if os.path.exists(test_repo_path):
-                    os.remove(test_repo_path)
+                # Try next platform
                 continue
         
         if platform is None:
@@ -456,7 +467,7 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
     with open(repo_path, 'rb') as f:
         repo_json = decompress_if_needed(f.read())
     
-    print(f"   ✓ {repo_path}")
+    print(f"   {SYMBOL_CHECK} {repo_path}")
     
     # 2. Download manifests from depot list
     print("\n[2/3] Downloading manifest files...")
@@ -473,14 +484,14 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
         print(f"   URL: {manifest_url}")
         downloader.download_raw_manifest(manifest_id, manifest_path, generation=1,
                                         game_id=game_id, platform=platform, timestamp=repository_id)
-        print(f"   ✓ {manifest_path}")
+        print(f"   {SYMBOL_CHECK} {manifest_path}")
     
     # 3. Download main.bin using authenticated secure links with parallel downloads
     # V1 depots use different path: v1/depots/{game_id}/{platform}/{timestamp}/main.bin
     if dry_run:
         print("\n[3/3] Skipping main.bin download (dry run)")
         print(f"   [DRY RUN] Would download main.bin to: v1/depots/{game_id}/{platform}/{repository_id}/main.bin")
-        print(f"\n✓ Dry run complete: manifests downloaded, main.bin skipped")
+        print(f"\n{SYMBOL_CHECK} Dry run complete: manifests downloaded, main.bin skipped")
     else:
         print("\n[3/3] Downloading main.bin (depot) with parallel downloads...")
         depot_dir = os.path.join(game_name, "v1", "depots", game_id, platform, repository_id)
@@ -498,14 +509,14 @@ def archive_v1_build(downloader: GalaxyDownloader, game_id: str, repository_id: 
             
             # Use parallel workers for faster downloads (50 MiB chunks each)
             downloader.download_main_bin(game_id, platform, repository_id, main_bin_path, num_workers=num_workers)
-            print(f"   ✓ {main_bin_path}")
+            print(f"   {SYMBOL_CHECK} {main_bin_path}")
         except Exception as e:
-            print(f"   ✗ Failed to download main.bin: {e}")
+            print(f"   {SYMBOL_ERROR} Failed to download main.bin: {e}")
             print("   Note: main.bin requires authentication - ensure you're logged in")
         
-        print(f"\n✓ Depot: {depot_dir}")
+        print(f"\n{SYMBOL_CHECK} Depot: {depot_dir}")
     
-    print(f"\n✓ Manifests: {base_dir}")
+    print(f"\n{SYMBOL_CHECK} Manifests: {base_dir}")
 
 
 def main():
