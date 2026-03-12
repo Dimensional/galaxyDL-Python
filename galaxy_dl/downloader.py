@@ -56,7 +56,9 @@ class GalaxyDownloader:
     V1: Downloads main.bin using HTTP range requests (multi-threaded)
     V2: Downloads individual chunks (multi-threaded)
     
-    Both approaches use ThreadPoolExecutor for parallel downloads.
+    Both approaches use ThreadPoolExecutor for parallel downloads and write
+    data directly to disk at the correct offset, keeping memory usage minimal.
+    This allows downloading files larger than available RAM.
     """
 
     def __init__(self, api: GalaxyAPI, max_workers: int = 4):
@@ -128,6 +130,9 @@ class GalaxyDownloader:
         """
         Download a depot item (auto-detects V1 vs V2).
         
+        Memory-efficient: chunks are written directly to disk at the correct offset
+        and cleared from memory immediately. Allows downloading files larger than RAM.
+        
         For V1 items:
         - If item has v1_offset/v1_size: Extract individual file using range request
         - If item is just the blob: Download whole main.bin
@@ -135,7 +140,7 @@ class GalaxyDownloader:
         For V2 items:
         - If item is in SFC: Extract from provided sfc_data
         - If raw_mode=True: Save compressed chunks without decompression
-        - If raw_mode=False: Download, decompress, and assemble into final file
+        - If raw_mode=False: Download, decompress, and write directly to disk
         
         Args:
             item: DepotItem to download
@@ -340,7 +345,9 @@ class GalaxyDownloader:
         """
         Download V2 item using multi-threaded chunk downloads.
         
-        Now uses parallel chunk downloads like V1 for better performance.
+        Chunks are downloaded in parallel, decompressed, and written directly to disk
+        at the correct offset. Each chunk is cleared from memory immediately after writing.
+        This keeps memory usage minimal, allowing download of files larger than available RAM.
         
         Args:
             item: DepotItem to download
@@ -372,11 +379,19 @@ class GalaxyDownloader:
             # Raw mode: Save compressed chunks as separate files
             return self._download_v2_item_raw(item, output_dir, cdn_urls, verify_hash, progress_callback)
         
-        # Normal mode: Download, decompress, and assemble
-        # Download chunks in parallel
-        total_bytes = sum(chunk.size_compressed for chunk in item.chunks)
+        # Normal mode: Download, decompress, and write directly to disk
+        # Pre-allocate file to avoid memory issues with large files
+        total_bytes_compressed = sum(chunk.size_compressed for chunk in item.chunks)
+        total_bytes_uncompressed = item.total_size_uncompressed
         downloaded_bytes = 0
-        chunk_results: List[Optional[bytes]] = [None] * len(item.chunks)  # Preserve order
+        
+        self.logger.debug(f"Pre-allocating file: {total_bytes_uncompressed:,} bytes")
+        
+        # Pre-allocate the output file (sparse file on supported filesystems)
+        with open(output_path, 'wb') as f:
+            if total_bytes_uncompressed > 0:
+                f.seek(total_bytes_uncompressed - 1)
+                f.write(b'\0')
         
         # Create chunk download tasks
         tasks = []
@@ -391,7 +406,7 @@ class GalaxyDownloader:
             )
             tasks.append(task)
         
-        # Download chunks in parallel
+        # Download chunks in parallel and write each directly to disk
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_task = {
                 executor.submit(self._download_and_decompress_chunk, task, cdn_urls): task
@@ -402,24 +417,24 @@ class GalaxyDownloader:
                 task = future_to_task[future]
                 try:
                     decompressed_data = future.result()
-                    chunk_results[task.chunk_index] = decompressed_data
+                    
+                    # Write chunk directly to disk at correct offset
+                    with open(output_path, 'r+b') as f:
+                        f.seek(task.chunk.offset_uncompressed)
+                        f.write(decompressed_data)
+                    
+                    # Clear from memory immediately
+                    del decompressed_data
                     
                     downloaded_bytes += task.chunk.size_compressed
                     if progress_callback:
-                        progress_callback(downloaded_bytes, total_bytes)
+                        progress_callback(downloaded_bytes, total_bytes_compressed)
                     
                     self.logger.debug(f"Completed chunk {task.chunk_index + 1}/{len(item.chunks)}")
                     
                 except Exception as e:
                     self.logger.error(f"Failed to download chunk {task.chunk_index}: {e}")
                     raise DownloadError(f"V2 item download failed: {e}")
-        
-        # Write all chunks to file in order
-        with open(output_path, 'wb') as output_file:
-            for chunk_data in chunk_results:
-                if chunk_data is None:
-                    raise DownloadError("Missing chunk data - download incomplete")
-                output_file.write(chunk_data)
         
         # Verify final file hash if available
         if item.md5 and verify_hash:
