@@ -161,8 +161,10 @@ def cmd_info(args):
     return 0
 
 
-def cmd_library(args):
-    """Handle library command to show owned games."""
+def cmd_cache_update(args):
+    """Handle cache-update command to refresh library cache."""
+    from galaxy_dl.library_cache import LibraryCache
+    
     auth = AuthManager(config_path=args.config)
     
     if not auth.is_authenticated():
@@ -170,6 +172,63 @@ def cmd_library(args):
         return 1
     
     api = GalaxyAPI(auth)
+    cache = LibraryCache()
+    
+    # Check if update needed
+    if not args.force:
+        age = cache.get_age_days()
+        if age is not None and age < 1:
+            print(f"✓ Cache is fresh ({age:.1f} days old)")
+            print("\nUse --force to update anyway")
+            return 0
+    
+    print("Updating library cache (fast lookup index)...")
+    print("This builds a lightweight JSON index for quick slug/title searches.")
+    print("(DLC entries and unavailable games will be skipped)")
+    print("")
+    print("NOTE: This is separate from 'python examples/list_library.py'")
+    print("      which creates gog_library.db for comprehensive archival.\n")
+    
+    try:
+        # Get total count before update
+        game_ids = api.get_owned_games()
+        total_entries = len(game_ids) if game_ids else 0
+        
+        games = cache.update_from_api(api)
+        
+        skipped = total_entries - len(games)
+        
+        print(f"\n✓ Successfully cached {len(games)} games")
+        if skipped > 0:
+            print(f"  (Skipped {skipped} DLC/unavailable entries)")
+        print(f"Cache location: {cache.cache_path}")
+        print("\nYou can now use fast searches in examples/download_web.py:")
+        print("  python examples/download_web.py witcher_3")
+        print("  python examples/download_web.py \"^Doom.*\"")
+        
+        return 0
+        
+    except Exception as e:
+        print(f"✗ Error updating cache: {e}")
+        return 1
+
+
+def cmd_library(args):
+    """Handle library command to show owned games."""
+    from galaxy_dl.utils import filter_games_by_pattern
+    
+    auth = AuthManager(config_path=args.config)
+    
+    if not auth.is_authenticated():
+        print("✗ Not authenticated. Please run 'galaxy-dl login' first.")
+        return 1
+    
+    api = GalaxyAPI(auth)
+    
+    # Pattern matching requires details
+    if args.pattern and not args.details:
+        print("✗ --pattern requires --details flag (pattern matching needs game titles)")
+        return 1
     
     print("Fetching your game library...")
     
@@ -184,16 +243,50 @@ def cmd_library(args):
         
         if args.details:
             print("\nFetching game details (this may take a moment)...\n")
-            for idx, game_id in enumerate(game_ids[:args.limit], 1):
+            
+            # Fetch all games for pattern matching, or limited set otherwise
+            fetch_count = len(game_ids) if args.pattern else min(args.limit, len(game_ids))
+            
+            games = []
+            for game_id in game_ids[:fetch_count]:
                 try:
                     details = api.get_game_details(game_id)
-                    title = details.get("title", "Unknown")
-                    print(f"{idx:4}. {title} (ID: {game_id})")
+                    games.append({
+                        'id': game_id,
+                        'title': details.get("title", "Unknown")
+                    })
                 except Exception as e:
-                    print(f"{idx:4}. Game ID: {game_id} (Error: {e})")
+                    games.append({
+                        'id': game_id,
+                        'title': f"[Error: {e}]"
+                    })
             
-            if len(game_ids) > args.limit:
+            # Apply pattern filter if specified
+            if args.pattern:
+                try:
+                    filtered_games = filter_games_by_pattern(
+                        games, 
+                        args.pattern, 
+                        case_sensitive=args.case_sensitive
+                    )
+                    print(f"Pattern: '{args.pattern}' (case-{'sensitive' if args.case_sensitive else 'insensitive'})")
+                    print(f"Matches: {len(filtered_games)} of {len(games)} games\n")
+                    games = filtered_games
+                except ValueError as e:
+                    print(f"✗ {e}")
+                    return 1
+            
+            # Display results
+            if not games:
+                print("No games match the pattern")
+                return 0
+            
+            for idx, game in enumerate(games, 1):
+                print(f"{idx:4}. {game['title']} (ID: {game['id']})")
+            
+            if not args.pattern and len(game_ids) > args.limit:
                 print(f"\n... and {len(game_ids) - args.limit} more games")
+                print("Use --limit to show more, or --pattern to filter")
         else:
             print("\nGame IDs:")
             for idx, game_id in enumerate(game_ids[:args.limit], 1):
@@ -223,6 +316,7 @@ def main():
         epilog="Examples:\n"
                "  galaxy-dl login                   # Show authentication instructions\n"
                "  galaxy-dl login CODE              # Authenticate with OAuth code\n"
+               "  galaxy-dl cache-update            # Build/refresh library cache (faster searches)\n"
                "  galaxy-dl library --details       # List owned games\n"
                "  galaxy-dl info 1207658930         # Show builds for a game\n\n"
                "For more: https://github.com/Dimensional/galaxyDL-Python/tree/main/examples"
@@ -272,6 +366,23 @@ def main():
     )
     login_parser.set_defaults(func=cmd_login)
     
+    # Cache update command
+    cache_parser = subparsers.add_parser(
+        "cache-update",
+        help="Update local library cache",
+        description="Update local library cache for faster game lookups.\n\n"
+                    "The cache stores game IDs, titles, and slugs locally, enabling\n"
+                    "instant searches instead of querying the API each time.\n\n"
+                    "Cache location: ~/.config/galaxy_dl/library_cache.json",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    cache_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force update even if cache is fresh"
+    )
+    cache_parser.set_defaults(func=cmd_cache_update)
+    
     # Library command
     library_parser = subparsers.add_parser("library", help="List owned games")
     library_parser.add_argument(
@@ -280,10 +391,20 @@ def main():
         help="Fetch game titles (slower)"
     )
     library_parser.add_argument(
+        "--pattern",
+        type=str,
+        help="Filter games by regex pattern (requires --details, Perl syntax)"
+    )
+    library_parser.add_argument(
+        "--case-sensitive",
+        action="store_true",
+        help="Make pattern matching case-sensitive (default: case-insensitive)"
+    )
+    library_parser.add_argument(
         "--limit",
         type=int,
         default=50,
-        help="Maximum games to show (default: 50)"
+        help="Maximum games to show (default: 50, ignored when using --pattern)"
     )
     library_parser.set_defaults(func=cmd_library)
     

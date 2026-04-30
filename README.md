@@ -173,6 +173,57 @@ For actual downloading and validation, use the example scripts:
 - `examples/list_library.py` - Full library browser with details
 - See `examples/` folder for more
 
+## Library Caching Systems
+
+**IMPORTANT**: This library uses TWO SEPARATE caching systems for different purposes:
+
+### 1. Fast Lookup Cache (`library_cache.json`)
+
+**Purpose**: Lightweight index for quick game ID/slug lookups during downloads  
+**Location**: `~/.config/galaxy_dl/library_cache.json` (or `%APPDATA%\galaxy_dl\` on Windows)  
+**Size**: ~78 KB (minimal data)  
+**Data Stored**: Only `id`, `title`, `slug` for each game  
+**Used By**: CLI commands, `download_web.py`, `download_game.py`  
+**Update Command**: `galaxy-dl cache-update`
+
+```bash
+# Build/refresh the fast lookup cache
+galaxy-dl cache-update
+
+# Then use slugs for fast downloads
+python examples/download_web.py doom_3
+python examples/download_web.py beneath_the_steel_sky
+```
+
+### 2. Comprehensive Library Database (`gog_library.db`)
+
+**Purpose**: Complete library archival and exploration with full metadata  
+**Location**: `./gog_library.db` (current directory)  
+**Size**: ~9 MB (complete data)  
+**Data Stored**: Full game details, DLCs, downloads, images, changelog, languages, etc.  
+**Used By**: `list_library.py` for comprehensive library browsing  
+**Update Command**: `python examples/list_library.py`
+
+```bash
+# Build comprehensive SQLite database
+python examples/list_library.py
+
+# Query with SQLite
+sqlite3 gog_library.db "SELECT title, dlc_count FROM games WHERE dlc_count > 0"
+```
+
+### Which One Should I Use?
+
+| Task | Use |
+|------|-----|
+| Download games by slug/title | Fast lookup cache (`cache-update`) |
+| CLI search operations | Fast lookup cache (`cache-update`) |
+| Browse full library metadata | Comprehensive database (`list_library.py`) |
+| Query DLC relationships | Comprehensive database (`list_library.py`) |
+| Archive complete game info | Comprehensive database (`list_library.py`) |
+
+**Both systems can coexist** - they serve different purposes and don't conflict.
+
 ## Quick Start (Python API)
 
 ### 1. Authentication

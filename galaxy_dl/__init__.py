@@ -15,6 +15,7 @@ from galaxy_dl.api import GalaxyAPI
 from galaxy_dl.auth import AuthManager
 from galaxy_dl.downloader import GalaxyDownloader
 from galaxy_dl.web import WebDownloader
+from galaxy_dl.library_cache import LibraryCache
 from galaxy_dl.models import DepotItem, DepotItemChunk, Manifest, FilePatchDiff, Patch
 from galaxy_dl.diff import ManifestDiff
 
@@ -23,6 +24,7 @@ __all__ = [
     "AuthManager",
     "GalaxyDownloader",
     "WebDownloader",
+    "LibraryCache",
     "DepotItem",
     "DepotItemChunk",
     "Manifest",

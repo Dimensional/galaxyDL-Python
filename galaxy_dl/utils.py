@@ -392,3 +392,48 @@ def merge_url_with_params(url_template: str, parameters: Dict[str, str]) -> str:
         url = url.replace(placeholder, str(value))
     return url
 
+
+def filter_games_by_pattern(games: list, pattern: str, case_sensitive: bool = False) -> list:
+    """
+    Filter games by regex pattern matching against title.
+    
+    Similar to lgogdownloader's --game flag, supports Perl-style regex patterns.
+    
+    Args:
+        games: List of game dictionaries (must have 'title' and 'id' keys)
+        pattern: Regex pattern to match (Perl syntax)
+        case_sensitive: Whether matching should be case-sensitive (default: False)
+        
+    Returns:
+        List of games matching the pattern
+        
+    Examples:
+        >>> # Match games starting with "Witcher"
+        >>> filter_games_by_pattern(games, "^Witcher")
+        
+        >>> # Match any Final Fantasy game
+        >>> filter_games_by_pattern(games, ".*Final Fantasy.*")
+        
+        >>> # Exact match
+        >>> filter_games_by_pattern(games, "^Beneath the Steel Sky$")
+    """
+    import re
+    
+    if not pattern:
+        return games
+    
+    flags = 0 if case_sensitive else re.IGNORECASE
+    
+    try:
+        regex = re.compile(pattern, flags)
+    except re.error as e:
+        raise ValueError(f"Invalid regex pattern '{pattern}': {e}")
+    
+    filtered = []
+    for game in games:
+        title = game.get('title', '')
+        if regex.search(title):
+            filtered.append(game)
+    
+    return filtered
+

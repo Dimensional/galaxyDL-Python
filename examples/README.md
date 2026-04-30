@@ -92,6 +92,73 @@ python examples/download_game.py
 
 ---
 
+### [download_selective_files.py](download_selective_files.py)
+**Download specific files or groups of files (Interactive)**
+
+Interactive script for downloading only the files you need from a build. Shows how to:
+- Browse and filter files in a manifest
+- Filter by wildcard patterns (`*.exe`, `data/*`, `*.pak`)
+- Filter by regex, extension, size, or directory
+- Download only selected files
+- Works with both V1 and V2 builds
+- Handles SFC (Small Files Container) extraction automatically
+
+```bash
+python examples/download_selective_files.py
+```
+
+**Filter Examples:**
+- `*.exe` - All executables
+- `*.dll` - All DLL files
+- `data/*` - All files in data directory
+- `*.pak` - All PAK archives
+- Size range: 0-100MB files only
+
+**Use Cases:**
+- Download only game executables for testing
+- Get only documentation/config files
+- Download specific asset directories
+- Selective patching of game files
+
+**See also:** [SELECTIVE_DOWNLOAD_PATTERNS.md](SELECTIVE_DOWNLOAD_PATTERNS.md) for filter pattern examples
+
+---
+
+### [download_selective_quick.py](download_selective_quick.py)
+**Download specific files (Non-interactive/Scripting)**
+
+Command-line script for automated selective downloads. Perfect for scripting and CI/CD:
+
+```bash
+# Download all executables
+python examples/download_selective_quick.py 1207658924 12345 "*.exe"
+
+# Download all files in data directory
+python examples/download_selective_quick.py 1207658924 12345 "data/*"
+
+# Download specific extensions
+python examples/download_selective_quick.py 1207658924 12345 "exe,dll" --extension-mode
+
+# Show matching files without downloading
+python examples/download_selective_quick.py 1207658924 12345 "*.pak" --show-only
+```
+
+**Options:**
+- `--platform`: windows/osx/linux (default: windows)
+- `--regex`: Use regex instead of wildcards
+- `--extension-mode`: Comma-separated extensions
+- `--output`: Custom output directory
+- `--workers`: Number of parallel download threads
+- `--show-only`: Preview matches without downloading
+
+**Use Cases:**
+- Automated game asset extraction
+- CI/CD pipeline integration
+- Batch processing multiple builds
+- Quick file grabs without interaction
+
+---
+
 ### [v1_download.py](v1_download.py)
 **V1 Download - Two Approaches**
 

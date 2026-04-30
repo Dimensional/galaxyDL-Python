@@ -75,6 +75,7 @@ class GalaxyDownloader:
         
         # Create a session for downloads
         self.session = requests.Session()
+        self.session.auth = lambda r: r  # Prevent .netrc credentials from being injected
         self.session.headers.update({
             "User-Agent": constants.USER_AGENT.format(version="0.1.0")
         })

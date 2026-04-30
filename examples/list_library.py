@@ -1,6 +1,23 @@
 """
 Build a SQLite database of your complete GOG library.
 
+This example creates a COMPREHENSIVE DATABASE for library exploration and archival.
+This is separate from the lightweight library_cache.json used for fast lookups.
+
+NOTE: Two different caching systems exist:
+      
+      gog_library.db (this script):
+      - Purpose: Comprehensive library archival and exploration
+      - Size: ~9 MB (complete metadata)
+      - Data: Full game details, DLCs, downloads, images, changelog
+      - Usage: SQLite queries, library browsing, archival
+      
+      library_cache.json (galaxy_dl.library_cache module):
+      - Purpose: Fast game ID/slug lookups during downloads
+      - Size: ~78 KB (lightweight)
+      - Data: Only id, title, slug
+      - Usage: CLI commands (galaxy-dl cache-update), download examples
+
 This example shows how to:
 - Authenticate with GOG (using GUI if available)
 - Fetch all owned product IDs (Step 1)

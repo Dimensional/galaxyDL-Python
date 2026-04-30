@@ -39,6 +39,7 @@ class GalaxyAPI:
         
         # Setup session
         self.session = requests.Session()
+        self.session.auth = lambda r: r  # Prevent .netrc credentials from being injected
         self.session.headers.update({
             "User-Agent": constants.USER_AGENT.format(version="0.1.0")
         })
@@ -890,9 +891,11 @@ class GalaxyAPI:
         Returns:
             Product information JSON
         """
+        # Note: GOG API no longer supports expanded_dlcs in expand parameter
+        # Must fetch DLC info separately if needed
         url = f"{constants.GOG_API}/products/{product_id}"
         params = {
-            "expand": "downloads,expanded_dlcs,description,screenshots,videos,related_products,changelog",
+            "expand": "downloads,description,screenshots,videos,related_products,changelog",
             "locale": "en-US"
         }
         
@@ -901,7 +904,22 @@ class GalaxyAPI:
         try:
             response = self.session.get(url, params=params, timeout=constants.DEFAULT_TIMEOUT)
             response.raise_for_status()
-            return response.json()
+            product_info = response.json()
+            
+            # Fetch expanded DLC info separately if available
+            # GOG removed expanded_dlcs from expand parameter - must use separate URL
+            # Note: dlcs field can be either a list (just IDs) or dict (with expanded_all_products_url)
+            dlcs = product_info.get("dlcs")
+            if isinstance(dlcs, dict) and dlcs.get("expanded_all_products_url"):
+                dlc_url = dlcs["expanded_all_products_url"]
+                try:
+                    dlc_response = self.session.get(dlc_url, timeout=constants.DEFAULT_TIMEOUT)
+                    dlc_response.raise_for_status()
+                    product_info["expanded_dlcs"] = dlc_response.json()
+                except Exception as e:
+                    self.logger.warning(f"Failed to get expanded DLC info: {e}")
+            
+            return product_info
         except Exception as e:
             self.logger.error(f"Failed to get product info: {e}")
             return {}

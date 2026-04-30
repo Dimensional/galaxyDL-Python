@@ -2,6 +2,8 @@
 heroic-gogdl/
 lgogdownloader/
 dependencies/
+Ignore/
+gogrepoc/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
